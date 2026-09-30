@@ -1,0 +1,95 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+index a04a6b2..927cfa0 100644
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -10119,39 +10119,71 @@ static void ggml_vk_fwht(ggml_backend_vk_context * ctx, vk_context& subctx, cons
+     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, { src_buf, dst_buf }, pc, { workgroups_x, 1, 1 });
+ }
+ 
++// Handle huge A matrix by splitting the M dimensions. This works well for convolution use cases
++// where the M dimension is very large.
++// Split_k doesn't work with M splitting.
++// This only supports batchsize == 1.
++static void ggml_vk_mul_mat_q_f16_m_split(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
++    // Choose the number of rows that can fit (and divide by two, to allow for any additional offsets)
++    const uint32_t M_split = ctx->device->properties.limits.maxStorageBufferRange / (2 * src0->nb[1]);
++    uint32_t m_offset = 0;
++    while (m_offset < dst->ne[0]) {
++        const uint32_t cur_M_size = std::min(M_split, (uint32_t)(dst->ne[0] - m_offset));
++        ggml_tensor dst2 = *dst;
++        ggml_tensor src02 = *src0;
++
++        dst2.view_src = dst->view_src ? dst->view_src : dst;
++        src02.view_src = src0->view_src ? src0->view_src : src0;
++
++        dst2.view_offs += m_offset * dst->nb[0];
++        src02.view_offs += m_offset * src0->nb[1];
++        dst2.ne[0] = cur_M_size;
++        src02.ne[1] = cur_M_size;
++
++        ggml_vk_mul_mat_q_f16(ctx, subctx, &src02, src1, &dst2, true);
++
++        m_offset += cur_M_size;
++    }
++}
+ static void ggml_vk_mul_mat(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+     ggml_tensor * dst = cgraph->nodes[node_idx];
+     ggml_tensor * src0 = dst->src[0];
+     ggml_tensor * src1 = dst->src[1];
+     VK_LOG_DEBUG("ggml_vk_mul_mat(" << src0 << ", " << src1 << ", " << dst << ")");
+ 
+-    // Handle huge A matrix by splitting the M dimensions. This works well for convolution use cases
+-    // where the M dimension is very large.
+-    // Split_k doesn't work with M splitting.
++    // Handle huge B matrix by splitting the N dimension. Long-sequence convolutions can produce
++    // a very wide src1/dst, which would exceed maxComputeWorkGroupCount[1] in the Y dimension.
++    // 32 is the smallest wg_denoms[1] of any matmul pipeline.
+     // This only supports batchsize == 1.
+-    const size_t nbytes = ggml_nbytes(src0);
+-    const bool needs_split = dst->ne[2] == 1 && dst->ne[3] == 1 && nbytes > ctx->device->properties.limits.maxStorageBufferRange;
+-    if (needs_split) {
+-        // Choose the number of rows that can fit (and divide by two, to allow for any additional offsets)
+-        const uint32_t M_split = ctx->device->properties.limits.maxStorageBufferRange / (2 * src0->nb[1]);
+-        uint32_t m_offset = 0;
+-        while (m_offset < dst->ne[0]) {
+-            const uint32_t cur_M_size = std::min(M_split, (uint32_t)(dst->ne[0] - m_offset));
++    const uint32_t max_n = ctx->device->properties.limits.maxComputeWorkGroupCount[1] * 32;
++    if (dst->ne[2] == 1 && dst->ne[3] == 1 && dst->ne[1] > max_n) {
++        for (uint32_t n_offset = 0; n_offset < (uint32_t)dst->ne[1];) {
++            const uint32_t cur_n = std::min(max_n, (uint32_t)(dst->ne[1] - n_offset));
+             ggml_tensor dst2 = *dst;
+-            ggml_tensor src02 = *src0;
++            ggml_tensor src12 = *src1;
+ 
+             dst2.view_src = dst->view_src ? dst->view_src : dst;
+-            src02.view_src = src0->view_src ? src0->view_src : src0;
++            src12.view_src = src1->view_src ? src1->view_src : src1;
+ 
+-            dst2.view_offs += m_offset * dst->nb[0];
+-            src02.view_offs += m_offset * src0->nb[1];
+-            dst2.ne[0] = cur_M_size;
+-            src02.ne[1] = cur_M_size;
++            dst2.view_offs += n_offset * dst->nb[1];
++            src12.view_offs += n_offset * src1->nb[1];
++            dst2.ne[1] = cur_n;
++            src12.ne[1] = cur_n;
+ 
+-            ggml_vk_mul_mat_q_f16(ctx, subctx, &src02, src1, &dst2, true);
++            if (ggml_nbytes(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
++                ggml_vk_mul_mat_q_f16_m_split(ctx, subctx, src0, &src12, &dst2);
++            } else {
++                ggml_vk_mul_mat_q_f16(ctx, subctx, src0, &src12, &dst2, true);
++            }
+ 
+-            m_offset += cur_M_size;
++            n_offset += cur_n;
+         }
++        return;
++    }
++
++    const bool needs_split = dst->ne[2] == 1 && dst->ne[3] == 1 && ggml_nbytes(src0) > ctx->device->properties.limits.maxStorageBufferRange;
++    if (needs_split) {
++        ggml_vk_mul_mat_q_f16_m_split(ctx, subctx, src0, src1, dst);
+     } else if (ggml_vk_can_use_fwht(ctx, src1, dst)) {
+         ggml_vk_fwht(ctx, subctx, src1, dst);
+     } else if (src0->type == GGML_TYPE_F16 && ggml_is_permuted(src0) && ggml_is_permuted(src1) && dst->ne[1] == 1 &&

@@ -1,0 +1,28 @@
+# build trees
+build/
+build-*/
+out/
+
+# runtime artifacts
+work/
+output/
+models/
+input/
+
+# generated model/audio/binary data
+*.gguf
+*.wav
+*.raw
+*.pth
+*.pt
+*.index
+
+# python
+__pycache__/
+*.pyc
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
