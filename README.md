@@ -26,7 +26,7 @@
 ## 构建
 
 ```powershell
-git clone --recursive https://github.com/<你的用户名>/RVC-GGML-Public.git RVC-GGML
+git clone --recursive https://github.com/Chui-Las/RVC-GGML.git RVC-GGML
 cd RVC-GGML
 
 # 训练侧（会级联构建 rvc-prep / rvc-train / RVC-GGML）
