@@ -3,7 +3,7 @@
 纯 C++ / [ggml](https://github.com/ggml-org/ggml) 实现的 [RVC（Retrieval-based-Voice-Conversion）](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)**训练 + 推理**，无需 CUDA——**AMD / Intel / NVIDIA 显卡通过 Vulkan 均可加速**，无独显也可 CPU 运行。
 
 - **rvc-ggml**：推理。把 Python/PyTorch 的 RVC 推理链路（HuBERT 特征 → RMVPE 变调 → VITS 合成 → FAISS 检索）完整移植为 C++ + ggml，模型以 GGUF 格式分发。
-- **rvc-train-ggml**：训练。基于 [train.cpp](https://github.com/Chui-Las/train.cpp)（C++ 深度学习训练库，autograd + Vulkan 后端）实现 RVC 的预处理、GAN 训练循环与推理模型导出，与 rvc-ggml 形成"训练 → 导出 GGUF → 推理"的闭环。
+- **rvc-train-ggml**：训练。基于 [train.cpp](https://github.com/Chui-Las/train.cpp) v0.4.0（C++ 深度学习训练库，autograd + Vulkan 后端，设备端优化器 + device-local 训练缓冲）实现 RVC 的预处理、GAN 训练循环与推理模型导出，与 rvc-ggml 形成"训练 → 导出 GGUF → 推理"的闭环。
 
 > 设计目标：输出与 Python 原版数值/听感一致（导出模型严格自检 corr=1.0000，端到端 corr ≥ 0.999）。
 
@@ -32,6 +32,7 @@ cd RVC-GGML
 # 训练侧（会级联构建 rvc-prep / rvc-train / RVC-GGML）
 powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1
 # 产物在 rvc-train-ggml\build\bin\
+# cmake/ninja 不在 PATH 时，脚本会自动使用 Visual Studio 自带的版本
 ```
 
 或手动 CMake：
@@ -114,6 +115,11 @@ rvc-train.exe --interactive
   可用 `RVC_VK_ENABLE_INTDOT=1` 恢复；fp16 计算路径默认同样禁用（`RVC_VK_ENABLE_F16=1` 恢复）。
 - 官方 ggml 的 Vulkan 矩阵乘在 N 维超限时（长音频 / 48kHz 模型）会触发
   `maxComputeWorkGroupCount` 断言——本项目补丁已修复，FetchContent 路径自动应用。
+- 训练侧自 train.cpp v0.4.0 起，Vulkan 计算缓冲默认优先 device-local（独显真显存 +
+  共享 staging / 可映射 device-local / host-visible 回退）；旧驱动或排查时可设
+  `TRC_VK_HOST_MEMORY=1` 回退 host-visible。
+- 长时间训练建议设 `TRC_VK_CHUNK_NODES=64`（分批提交，缓解部分独显驱动的 TDR /
+  设备丢失）；`TRC_OPT_HOST=1` 仅用于强制主机优化器做 A/B 对比。
 
 ## License
 
@@ -122,7 +128,7 @@ rvc-train.exe --interactive
 本项目依赖/参考了以下优秀的开源项目，各自许可证见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)：
 
 - [ggml](https://github.com/ggml-org/ggml)（MIT）—— 推理后端
-- [train.cpp](https://github.com/Chui-Las/train.cpp)（MIT）—— C++ 深度学习训练库（submodule）
+- [train.cpp](https://github.com/Chui-Las/train.cpp)（MIT）—— C++ 深度学习训练库（v0.4.0，submodule）
 - [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)（MIT）—— 语义基准与模型生态
 - [dr_wav](https://github.com/mackron/dr_libs)（MIT-0 / Unlicense）与
   [pocketfft](https://github.com/mreineck/pocketfft)（BSD-3）—— vendored 单头库

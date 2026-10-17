@@ -40,6 +40,7 @@ SOFTWARE.
 ## 2. train.cpp（训练库，git submodule）
 
 - 来源：https://github.com/Chui-Las/train.cpp （`third_party/train.cpp`）
+- 固定版本：v0.4.0（commit `e99d74b`）
 - 许可证：MIT（随 submodule 自带 LICENSE 文件）
 
 ```

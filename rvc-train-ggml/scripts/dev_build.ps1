@@ -47,6 +47,15 @@ if (-not $Ninja) {
     $cmd = Get-Command ninja -ErrorAction SilentlyContinue
     if ($cmd) { $Ninja = $cmd.Source }
 }
+# Fall back to the CMake/Ninja bundled with Visual Studio (not always on PATH).
+if (-not $CMake -and $vsRoot) {
+    $candidate = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+    if (Test-Path -LiteralPath $candidate) { $CMake = $candidate }
+}
+if (-not $Ninja -and $vsRoot) {
+    $candidate = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+    if (Test-Path -LiteralPath $candidate) { $Ninja = $candidate }
+}
 
 foreach ($tool in @($VcVars)) {
     if (-not $tool -or -not (Test-Path -LiteralPath $tool)) {

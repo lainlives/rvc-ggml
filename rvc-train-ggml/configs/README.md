@@ -27,10 +27,13 @@
 ## 默认训练参数
 
 v1-40k-f0 / v2-48k-f0 默认：`batch_size=1, bucket=384, disc_len=12800`，
-训练后端默认 `TRC_VK_CHUNK_NODES=64`。该组默认值按 4 GB 级共享显存的 GPU 实测定稿：
+训练后端默认 `TRC_VK_CHUNK_NODES=64`。该组默认值按 4 GB 级显存/共享内存的 GPU 保守设定：
 
-- batch ≥ 2 会受 Vulkan 单 `VkBuffer` 4096 MiB 的硬限制（后端仅使用 host-visible 内存，
-  内存上限实为系统内存/BAR，而非"显存"），默认不启用；
+- 单个 `VkBuffer` / 存储范围仍受驱动硬限（启动日志会打印实际 `maxBufferSize` /
+  `maxStorageBufferRange`，常见 4096 MiB）；`batch ≥ 2` 配大 `bucket/disc_len` 可能超限，默认不启用；
+- train.cpp v0.4.0 起训练缓冲默认优先 device-local（独显真显存 + 共享 staging /
+  可映射 device-local / host-visible 回退），不再固定占用系统内存；显存不足或旧驱动可用
+  `TRC_VK_HOST_MEMORY=1` 回退 host-visible；
 - 高显存机器可用 CLI `--batch/--bucket/--disc-len` 放大；
 - 交互式向导另有更保守的稳定档默认（`bucket=300/batch=2/disc_len=4800`）。
 
