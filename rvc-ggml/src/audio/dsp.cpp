@@ -1,5 +1,5 @@
 // dsp.cpp
-// RVC 音频信号处理实现。系数与边界处理对齐 scipy（filtfilt/lfilter_zi）与 librosa。
+// RVC audio signal processing implementation. Coefficients and boundary handling align with scipy (filtfilt/lfilter_zi) and librosa.
 
 #include "dsp.h"
 
@@ -40,7 +40,7 @@ namespace {
         -0.9699605372808581,
     };
 
-    // 转置直接 II 型 IIR（对齐 scipy.signal.lfilter 的 zi 语义）
+    // Transposed direct form II IIR (aligned with scipy.signal.lfilter zi semantics)
     void lfilter_tdf2(const double* b, const double* a,
         const double* zi,
         std::vector<double>& x) {
@@ -63,15 +63,15 @@ namespace {
 
 void high_pass_48hz_in_place(std::vector<float>& samples) {
     if (samples.empty()) return;
-    // scipy.signal.filtfilt 默认 padlen = 3 * max(len(b), len(a)) = 3 * (order+1) = 18
+    // scipy.signal.filtfilt default padlen = 3 * max(len(b), len(a)) = 3 * (order+1) = 18
     const int padlen = 3 * (kOrder + 1);
 
-    // scipy filtfilt 的 odd 扩展：
-    //   left  = 2*x[0] - x[padlen:0:-1]（远端先出现：2*x0-x[padlen] ... 2*x0-x[1]）
-    //   right = 2*x[-1] - x[-2:-padlen-2:-1]（近端先出现：2*x-1-x[-2] ...）
+    // scipy filtfilt odd extension:
+    //   left  = 2*x[0] - x[padlen:0:-1] (far end first: 2*x0-x[padlen] ... 2*x0-x[1])
+    //   right = 2*x[-1] - x[-2:-padlen-2:-1] (near end first: 2*x-1-x[-2] ...)
     const size_t n = samples.size();
     if (static_cast<int64_t>(n) <= padlen) {
-        // scipy 同样要求 len(x) > padlen；极短输入不做扩展（防御）
+        // scipy likewise requires len(x) > padlen; very short inputs skip extension (defensive)
         return;
     }
     std::vector<double> ext(n + 2 * static_cast<size_t>(padlen), 0.0);
@@ -102,7 +102,7 @@ std::vector<float> reflect_pad(const std::vector<float>& samples, int64_t left, 
     const int64_t n = static_cast<int64_t>(samples.size());
     std::vector<float> out(static_cast<size_t>(n + left + right));
     for (int64_t i = 0; i < left; ++i) {
-        // 反射（不含边缘）：index = -i (i=1 -> samples[1] ... 但 numpy reflect 为 samples[i])
+        // Reflection (excluding the edge): index = -i (i=1 -> samples[1] ... but numpy reflect gives samples[i])
         int64_t idx = left - i;
         if (idx >= n) idx = n - 1 - (idx - (n - 1));
         idx = std::clamp<int64_t>(idx, 0, n - 1);
@@ -125,9 +125,9 @@ std::vector<float> frame_rms(const std::vector<float>& audio, int sample_rate) {
     const int hop = sample_rate / 2;
     if (frame_length <= 0 || hop <= 0 || audio.empty()) return {};
 
-    // 对齐 librosa.feature.rms(center=True)：默认 pad_mode='constant'（零填充），
+    // Aligned with librosa.feature.rms(center=True): default pad_mode='constant' (zero padding),
     //   padded = np.pad(x, frame_length//2, mode='constant')
-    //   帧数 = 1 + (len(padded) - frame_length) // hop
+    //   frame count = 1 + (len(padded) - frame_length) // hop
     const int64_t n = static_cast<int64_t>(audio.size());
     const int64_t pad = frame_length / 2;
     const int64_t padded_len = n + 2 * pad;
@@ -139,8 +139,8 @@ std::vector<float> frame_rms(const std::vector<float>& audio, int sample_rate) {
         const int64_t begin = f * hop;
         double sum = 0.0;
         for (int i = 0; i < frame_length; ++i) {
-            const int64_t src = begin + i - pad;   // padded 坐标 -> 原始样本坐标
-            if (src < 0 || src >= n) continue;     // 零填充区域
+            const int64_t src = begin + i - pad;   // padded coordinate -> original sample coordinate
+            if (src < 0 || src >= n) continue;     // zero-padding region
             const float v = audio[static_cast<size_t>(src)];
             sum += static_cast<double>(v) * static_cast<double>(v);
         }
@@ -192,7 +192,7 @@ void apply_rms_mix(const std::vector<float>& source_16k,
 }
 
 std::vector<float> audio_sum_curve(const std::vector<float>& audio) {
-    // audio_sum[t] = sum_{i=0..159} |audio_pad[i + t]|，audio_pad 左右各反射 80
+    // audio_sum[t] = sum_{i=0..159} |audio_pad[i + t]|; audio_pad is reflected by 80 on each side
     constexpr int64_t window = 160;
     const int64_t n = static_cast<int64_t>(audio.size());
     const auto padded = reflect_pad(audio, window / 2, window / 2);
@@ -217,7 +217,7 @@ std::vector<int64_t> quiet_split_points(const std::vector<float>& audio,
     std::vector<int64_t> splits;
     if (n <= t_max) return splits;
     if (t_query <= 0 || t_center <= 0 || t_max <= 0) {
-        throw std::runtime_error("静音切块参数必须为正");
+        throw std::runtime_error("Silent split parameters must be positive");
     }
 
     const auto audio_sum = audio_sum_curve(audio);
@@ -280,9 +280,9 @@ void interpolate_unvoiced(std::vector<float>& f0) {
         }
         size_t j = i;
         while (j < n && f0[j] == 0.0f) ++j;
-        // 区间 [i, j) 为 0
+        // interval [i, j) is 0
         if (i == 0 && j >= n) {
-            // 全 0
+            // all zeros
             break;
         }
         if (i == 0) {

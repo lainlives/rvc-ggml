@@ -1,10 +1,10 @@
 // utils.h
-// 通用工具函数集：日志、计时、字符串处理、文件系统辅助等。
-// 设计参照 MSST-GGML 同名模块（本项目独立实现，按 RVC 需要精简）。
+// General-purpose utilities: logging, timing, string handling, filesystem helpers, etc.
+// Design modeled on the same-named module in MSST-GGML (independent implementation here, trimmed down for RVC's needs).
 
 #pragma once
 
-// 清除 windows.h 带来的宏污染
+// Remove macro pollution introduced by windows.h
 #ifdef ERROR
 #undef ERROR
 #endif
@@ -22,7 +22,7 @@
 #include <filesystem>
 
 // --------------------------------------------------------------
-// 轻量级高精度计时器
+// Lightweight high-resolution timer
 // --------------------------------------------------------------
 class Timer {
 public:
@@ -51,7 +51,7 @@ private:
 };
 
 // --------------------------------------------------------------
-// 简单的控制台日志器
+// Simple console logger
 // --------------------------------------------------------------
 class Logger {
 public:
@@ -63,7 +63,7 @@ public:
     static void warn(const std::string& msg) { log(WARN, msg); }
     static void error(const std::string& msg) { log(ERROR, msg); }
 
-    // 简易进度条：[====>     ] 50.0%
+    // Simple progress bar: [====>     ] 50.0%
     static void progress(int current, int total, const std::string& desc = "") {
         if (total <= 0) return;
         const int bar_width = 20;
@@ -95,7 +95,7 @@ private:
 };
 
 // --------------------------------------------------------------
-// 字符串 / 文件系统工具
+// String / filesystem utilities
 // --------------------------------------------------------------
 namespace utils {
     std::string trim(const std::string& str);

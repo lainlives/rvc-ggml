@@ -1,5 +1,5 @@
 // pipeline.cpp
-// RVC 全链路离线转换管线实现（逐句对齐 infer/modules/vc/pipeline.py）。
+// RVC full offline conversion pipeline implementation (aligned sentence by sentence with infer/modules/vc/pipeline.py).
 
 #include "rvc/pipeline.h"
 
@@ -23,7 +23,7 @@ namespace rvc {
 
 namespace {
 
-    constexpr int64_t kWindow = 160;         // 每帧 10ms @16k
+    constexpr int64_t kWindow = 160;         // 10 ms per frame @16k
     constexpr float kRmvpeThreshold = 0.03f;
 
     bool load_raw_f32(const std::string& path, std::vector<float>& out) {
@@ -38,7 +38,7 @@ namespace {
         return static_cast<bool>(in) || in.eof();
     }
 
-    // ×2 最近邻上采样（对齐 F.interpolate(scale_factor=2)，mode 默认 nearest）
+    // ×2 nearest-neighbor upsampling (aligned with F.interpolate(scale_factor=2); mode defaults to nearest)
     std::vector<float> upsample2_nearest(const std::vector<float>& x, int64_t frames, int64_t dim) {
         std::vector<float> out(static_cast<size_t>(2 * frames * dim));
         for (int64_t t = 0; t < frames; ++t) {
@@ -79,7 +79,7 @@ struct RvcPipeline::Impl {
         }
     }
 
-    // 单块 VC：对齐 Pipeline.vc()
+    // Single-chunk VC: aligned with Pipeline.vc()
     std::vector<float> vc(const std::vector<float>& audio0,
         const std::vector<int32_t>& pitch_all, const std::vector<float>& pitchf_all,
         int64_t p_begin, int64_t p_end, const ConvertOptions& opt) {
@@ -88,7 +88,7 @@ struct RvcPipeline::Impl {
         const bool has_f0 = vcfg.has_f0;
         const int64_t inter = vcfg.inter_channels;
 
-        // HuBERT 特征 [T_tok, C]
+        // HuBERT features [T_tok, C]
         hubert::Features feats = hubert.extract(audio0, v2);
         const int64_t T_tok = feats.frames;
         const int64_t C = feats.dim;
@@ -98,25 +98,25 @@ struct RvcPipeline::Impl {
             feats0 = feats.values;
         }
 
-        // 检索混合（在 ×2 插值之前）
+        // Retrieval blending (before ×2 interpolation)
         if (opt.index != nullptr && opt.index->loaded() && opt.index_rate != 0.0f) {
             feats.values = opt.index->blend(feats.values, T_tok, 8, opt.index_rate);
         }
 
-        // ×2 最近邻插值
+        // ×2 nearest-neighbor interpolation
         feats.values = upsample2_nearest(feats.values, T_tok, C);
         feats.frames = T_tok * 2;
         if (!feats0.empty()) {
             feats0 = upsample2_nearest(feats0, T_tok, C);
         }
 
-        // p_len：audio0/160 与 feats 帧数的较小者
+        // p_len: the smaller of audio0/160 and feats frame count
         int64_t p_len = static_cast<int64_t>(audio0.size()) / kWindow;
         if (feats.frames < p_len) {
             p_len = feats.frames;
         }
 
-        // pitch 切片 + 截断
+        // pitch slicing + truncation
         std::vector<int32_t> pitch;
         std::vector<float> pitchf;
         if (has_f0) {
@@ -134,13 +134,13 @@ struct RvcPipeline::Impl {
             return {};
         }
 
-        // 验证模式：以参考 f0 覆盖（隔离 RMVPE 近似并列导致的翻转）
+        // Validation mode: overwrite with reference f0 (isolates flips caused by near-ties in RMVPE)
         if (has_f0 && opt.f0_inject && !opt.noise_dir.empty()) {
             char name[128];
             snprintf(name, sizeof(name), "e2e_call%03d_pitchf.raw", call_index);
             std::vector<float> injected;
             if (!load_raw_f32(opt.noise_dir + "/" + name, injected) || injected.empty()) {
-                throw std::runtime_error("f0 注入文件缺失: " + std::string(name));
+                throw std::runtime_error("f0 injection file missing: " + std::string(name));
             }
             p_len = std::min<int64_t>(static_cast<int64_t>(injected.size()), feats.frames);
             pitchf.assign(injected.begin(), injected.begin() + p_len);
@@ -150,7 +150,7 @@ struct RvcPipeline::Impl {
             }
         }
 
-        // protect：清音帧用原始特征替换（对齐 pitchff 语义）
+        // protect: replace unvoiced frames with the original features (aligned with pitchff semantics)
         if (!feats0.empty()) {
             for (int64_t t = 0; t < p_len; ++t) {
                 const float pf = pitchf[static_cast<size_t>(t)] >= 1.0f ? 1.0f : opt.protect;
@@ -162,7 +162,7 @@ struct RvcPipeline::Impl {
             }
         }
 
-        // z_p 噪声（[p_len, inter] 行主序）
+        // z_p noise ([p_len, inter] row-major)
         std::vector<float> noise;
         std::vector<float> sine_noise;
         const std::vector<float>* sine_noise_ptr = nullptr;
@@ -171,19 +171,19 @@ struct RvcPipeline::Impl {
             snprintf(name, sizeof(name), "e2e_call%03d_rnd.raw", call_index);
             if (!load_raw_f32(opt.noise_dir + "/" + name, noise) ||
                 noise.size() != static_cast<size_t>(p_len * inter)) {
-                throw std::runtime_error("噪声文件缺失/尺寸不符: " + std::string(name));
+                throw std::runtime_error("noise file missing / size mismatch: " + std::string(name));
             }
             if (has_f0) {
                 snprintf(name, sizeof(name), "e2e_call%03d_sine_noise.raw", call_index);
                 if (!load_raw_f32(opt.noise_dir + "/" + name, sine_noise) ||
                     sine_noise.size() != static_cast<size_t>(p_len * vcfg.hop_samples)) {
-                    throw std::runtime_error("Sine 噪声文件缺失/尺寸不符: " + std::string(name));
+                    throw std::runtime_error("Sine noise file missing / size mismatch: " + std::string(name));
                 }
                 sine_noise_ptr = &sine_noise;
             }
         }
         else {
-            // 生产模式：固定种子 + 每块错开（保证可复现且块间噪声不同）
+            // Production mode: fixed seed + per-chunk offset (reproducible, with different noise per chunk)
             std::mt19937 rng(1234u + static_cast<uint32_t>(call_index) * 7919u);
             std::normal_distribution<float> dist(0.0f, 1.0f);
             noise.resize(static_cast<size_t>(p_len * inter));
@@ -194,7 +194,7 @@ struct RvcPipeline::Impl {
         const uint32_t sine_seed = 4321u + static_cast<uint32_t>(call_index) * 7919u;
         ++call_index;
 
-        // 激励源：SineGen -> tanh(l_linear(·))
+        // Excitation source: SineGen -> tanh(l_linear(·))
         std::vector<float> source;
         if (has_f0) {
             source = sinegen::generate(pitchf, vcfg.sample_rate,
@@ -214,7 +214,7 @@ struct RvcPipeline::Impl {
         in.source = std::move(source);
         in.noise = std::move(noise);
 
-        // 验证模式：落盘中间量便于对位（pitchf 为 Hz 值，对齐参考 dump）
+        // Validation mode: dump intermediates for comparison (pitchf is in Hz, aligned with the reference dump)
         if (!opt.noise_dir.empty()) {
             char name[128];
             snprintf(name, sizeof(name), "e2e_cpp_call%03d_features.raw", call_index - 1);
@@ -233,7 +233,7 @@ struct RvcPipeline::Impl {
 
         vits::Output out = synth.infer(in);
 
-        // 裁掉前后 pad（t_pad_tgt = tgt_sr * x_pad）
+        // Trim leading/trailing pad (t_pad_tgt = tgt_sr * x_pad)
         const int64_t trim = static_cast<int64_t>(vcfg.sample_rate) * cfg.x_pad;
         if (static_cast<int64_t>(out.audio.size()) <= 2 * trim) {
             return {};
@@ -247,12 +247,12 @@ struct RvcPipeline::Impl {
         const bool has_f0 = vcfg.has_f0;
         call_index = 0;
 
-        // 1) 48Hz 高通
+        // 1) 48Hz high-pass
         std::vector<float> audio = audio_in;
         dsp::high_pass_48hz_in_place(audio);
         const int64_t n = static_cast<int64_t>(audio.size());
 
-        // 2) 静音点切块（对齐 pipeline.py，条件含 window 偏移）
+        // 2) Chunking at silent points (aligned with pipeline.py; the condition includes the window offset)
         std::vector<int64_t> opt_ts;
         if (n + kWindow > static_cast<int64_t>(cfg.x_max) * 16000) {
             const auto sum = dsp::audio_sum_curve(audio);
@@ -277,12 +277,12 @@ struct RvcPipeline::Impl {
             }
         }
 
-        // 3) 反射 pad
+        // 3) Reflection pad
         const int64_t t_pad = 16000 * cfg.x_pad;
         std::vector<float> audio_pad = dsp::reflect_pad(audio, t_pad, t_pad);
         const int64_t p_len_full = static_cast<int64_t>(audio_pad.size()) / kWindow;
 
-        // 4) f0（整段，基于 padded 音频）
+        // 4) f0 (whole segment, based on padded audio)
         std::vector<int32_t> pitch_all;
         std::vector<float> pitchf_all;
         if (has_f0) {
@@ -304,11 +304,11 @@ struct RvcPipeline::Impl {
                 const auto voiced = static_cast<int64_t>(std::count_if(
                     f0.begin(), f0.end(), [](float v) { return v > 0.0f; }));
                 Logger::info("f0: " + std::to_string(f0.size()) +
-                    " 帧（发声 " + std::to_string(voiced) + "）");
+                    " frames (voiced " + std::to_string(voiced) + ")");
             }
         }
 
-        // 5) 分块 VC
+        // 5) Chunked VC
         std::vector<std::vector<float>> chunks;
         int64_t s = 0;
         for (int64_t t : opt_ts) {
@@ -325,7 +325,7 @@ struct RvcPipeline::Impl {
                 pb = pe;
             }
             if (opt.verbose) {
-                Logger::info("切块: 样本 [" + std::to_string(s) + ", " +
+                Logger::info("Chunk: samples [" + std::to_string(s) + ", " +
                     std::to_string(chunk_end) + ")");
             }
             chunks.push_back(vc(audio0, pitch_all, pitchf_all, pb, pe, opt));
@@ -336,7 +336,7 @@ struct RvcPipeline::Impl {
             const int64_t pb = s / kWindow;
             const int64_t pe = static_cast<int64_t>(pitch_all.size());
             if (opt.verbose) {
-                Logger::info("末块: 样本 [" + std::to_string(s) + ", " +
+                Logger::info("Last chunk: samples [" + std::to_string(s) + ", " +
                     std::to_string(audio_pad.size()) + ")");
             }
             chunks.push_back(vc(audio0, pitch_all, pitchf_all, pb, pe, opt));
@@ -352,26 +352,26 @@ struct RvcPipeline::Impl {
             audio_opt.insert(audio_opt.end(), c.begin(), c.end());
         }
 
-        // 验证模式：落盘（RMS 混合前）浮点输出
+        // Validation mode: dump the float output (before RMS blending)
         if (!opt.noise_dir.empty() && !audio_opt.empty()) {
             std::ofstream f(opt.noise_dir + "/e2e_cpp_float.raw", std::ios::binary);
             f.write(reinterpret_cast<const char*>(audio_opt.data()),
                 static_cast<std::streamsize>(audio_opt.size() * sizeof(float)));
         }
 
-        // 6) RMS 混合
+        // 6) RMS blending
         if (opt.rms_mix_rate != 1.0f && !audio_opt.empty()) {
             dsp::apply_rms_mix(audio, audio_opt, tgt_sr, opt.rms_mix_rate);
         }
 
-        // 7) 重采样（tgt_sr != resample_sr >= 16000）
+        // 7) Resampling (tgt_sr != resample_sr >= 16000)
         int out_sr = tgt_sr;
         if (opt.resample_sr >= 16000 && opt.resample_sr != tgt_sr && !audio_opt.empty()) {
             audio_opt = resample_mono(audio_opt, tgt_sr, opt.resample_sr);
             out_sr = opt.resample_sr;
         }
 
-        // 8) int16（对齐 Python：max/0.99 归一化后截断）
+        // 8) int16 (aligned with Python: normalize by max/0.99, then truncate)
         ConvertResult result;
         result.sample_rate = out_sr;
         result.pcm.resize(audio_opt.size());
@@ -406,7 +406,7 @@ const vits::Config& RvcPipeline::voice_config() const {
 
 ConvertResult RvcPipeline::convert(const std::vector<float>& audio_16k, const ConvertOptions& opt) {
     if (audio_16k.empty()) {
-        throw std::runtime_error("输入音频为空");
+        throw std::runtime_error("Input audio is empty");
     }
     return impl_->run(audio_16k, opt);
 }

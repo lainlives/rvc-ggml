@@ -1,19 +1,19 @@
-// highpass.cpp —— scipy butter / lfilter 的位级复刻实现（M4-1）
+// highpass.cpp -- bit-level replica of scipy butter / lfilter (M4-1)
 //
-// 关键舍入事实（经 tools 原型与 scipy 1.9.3 + numpy 1.23.5 逐位比对确认，2026-09-24）：
-//   1) scipy.signal.butter 的系数生成链：
-//        buttap(5)  → lp2hp_zpk(wo=warped) → bilinear_zpk(fs=2) → zpk2tf
-//      其中 zpk2tf 用 np.poly 展开多项式，而 np.poly 内部是 np.convolve(a, [1,-r])；
-//      np.convolve 对 complex128 走 multiarray.correlate → CDOUBLE_dot → OpenBLAS zdotu。
-//      OpenBLAS zdotu 对 n=2 的精确关联为：
+// Key rounding facts (confirmed bit-for-bit by the tools prototype and scipy 1.9.3 + numpy 1.23.5, 2026-09-24):
+//   1) scipy.signal.butter coefficient generation chain:
+//        buttap(5)  -> lp2hp_zpk(wo=warped) -> bilinear_zpk(fs=2) -> zpk2tf
+//      where zpk2tf expands the polynomial with np.poly, and np.poly internals are np.convolve(a, [1,-r]);
+//      np.convolve dispatches complex128 to multiarray.correlate -> CDOUBLE_dot -> OpenBLAS zdotu.
+//      OpenBLAS zdotu's exact association for n=2 is:
 //        real = (x0r*y0r + x1r*y1r) - (x0i*y0i + x1i*y1i)
 //        imag = (x0r*y0i + x1r*y1i) + (x0i*y0r + x1i*y1r)
-//      （不是“先复数乘再顺序累加”；后者差 1 ulp，但该滤波器极点极靠近单位圆，
-//        1 ulp 系数差会被放大到 ~1e-6 输出量级，因此必须复刻。）
-//   2) 复数除法用 numpy 的 cdiv（Smith 算法 + 1/(br+bi*rat) 缩放）。
-//   3) lfilter 用 transposed direct form II。
-//      实测 fs∈{16000,32000,40000,44100,48000}、fc∈{30,48,60} 系数与 20 万样本输出
-//      均与 scipy 位级一致（maxdiff = 0）。
+//      (not complex-multiply-then-sequential-accumulate; the latter differs by 1 ulp, but this filter's poles
+//        sit very close to the unit circle, so a 1-ulp coefficient difference is amplified to ~1e-6 at the output, hence the replica is required.)
+//   2) complex division uses numpy's cdiv (Smith's algorithm + 1/(br+bi*rat) scaling).
+//   3) lfilter uses transposed direct form II.
+//      Measured: for fs in {16000,32000,40000,44100,48000} and fc in {30,48,60}, coefficients and 200k-sample outputs
+//      are bit-identical to scipy (maxdiff = 0).
 
 #include "prep/highpass.h"
 
@@ -26,21 +26,21 @@ namespace {
 
 const double kPi = 3.14159265358979323846264338327950288;
 
-// 复数（double 分量；所有运算显式展开，避免 std::complex 的实现差异）
+// Complex numbers (double components; all operations expanded explicitly to avoid std::complex implementation differences)
 struct Cx {
     double r = 0.0;
     double i = 0.0;
 };
 
-// numpy cmul：ar*br - ai*bi, ar*bi + ai*br（逐分量独立舍入）
+// numpy cmul: ar*br - ai*bi, ar*bi + ai*br (independent rounding per component)
 Cx cx_mul(const Cx& x, const Cx& y) {
     return Cx{x.r * y.r - x.i * y.i, x.r * y.i + x.i * y.r};
 }
 
-// numpy npy_cdiv（Smith 算法 + 缩放；见 numpy/core/src/npymath/npy_math_complex.c.src）
+// numpy npy_cdiv (Smith's algorithm + scaling; see numpy/core/src/npymath/npy_math_complex.c.src)
 #if defined(_MSC_VER)
 #pragma warning(push)
-// C4723：显式复刻 numpy 的除零分支（本项目 butter 链路不会触发；保留语义完整性）
+// C4723: explicitly replicate numpy's divide-by-zero branch (not triggered by this project's butter chain; kept for semantic completeness)
 #pragma warning(disable : 4723)
 #endif
 Cx cx_div(const Cx& x, const Cx& y) {
@@ -62,15 +62,15 @@ Cx cx_div(const Cx& x, const Cx& y) {
 #pragma warning(pop)
 #endif
 
-// OpenBLAS zdotu（n=2）精确关联（见文件头说明）
+// OpenBLAS zdotu (n=2) exact association (see the file header notes)
 Cx zdotu2(const Cx& x0, const Cx& x1, const Cx& y0, const Cx& y1) {
     const double sr = (x0.r * y0.r + x1.r * y1.r) - (x0.i * y0.i + x1.i * y1.i);
     const double si = (x0.r * y0.i + x1.r * y1.i) + (x0.i * y0.r + x1.i * y1.r);
     return Cx{sr, si};
 }
 
-// numpy.poly 的位级复刻：convolve(多项式, [1, -r], 'full')
-//   numpy 内部为 correlate(c, [-r, 1])；首尾 n=1（单乘积），中间段 n=2（zdotu2）。
+// Bit-level replica of numpy.poly: convolve(polynomial, [1, -r], 'full')
+//   numpy internals are correlate(c, [-r, 1]); head/tail n=1 (single product), middle sections n=2 (zdotu2).
 std::vector<Cx> poly_from_roots(const std::vector<Cx>& roots) {
     std::vector<Cx> c{Cx{1.0, 0.0}};
     for (const Cx& r : roots) {
@@ -91,22 +91,22 @@ std::vector<Cx> poly_from_roots(const std::vector<Cx>& roots) {
 
 void butter_highpass_ba(int order, double cutoff_hz, double fs,
                         std::vector<double>* b, std::vector<double>* a) {
-    // scipy.signal.iirfilter：Wn = 2*Wn/fs（归一化），再 prewarp（内部 fs 置 2）
+    // scipy.signal.iirfilter: Wn = 2*Wn/fs (normalized), then prewarp (internal fs set to 2)
     const double wn = 2.0 * cutoff_hz / fs;
     const double warp_fs = 2.0;
     const double warped = 2.0 * warp_fs * std::tan(kPi * wn / warp_fs);
 
-    // buttap(order)：极点 p = -exp(1j*pi*m/(2N))；numpy 的 1j 乘法与复数除法舍入需复刻
+    // buttap(order): poles p = -exp(1j*pi*m/(2N)); numpy's 1j multiplication and complex division rounding must be replicated
     const int n = order;
     std::vector<Cx> p_lp(static_cast<std::size_t>(n));
     for (int k = 0; k < n; ++k) {
         const int m = -n + 1 + 2 * k;
-        const double pi_m = kPi * static_cast<double>(m);  // complex(0,pi) * m → (0, pi*m)
+        const double pi_m = kPi * static_cast<double>(m);  // complex(0,pi) * m -> (0, pi*m)
         const Cx theta = cx_div(Cx{0.0, pi_m}, Cx{2.0 * n, 0.0});
         p_lp[static_cast<std::size_t>(k)] = Cx{-std::cos(theta.i), -std::sin(theta.i)};
     }
 
-    // lp2hp_zpk：p_hp = wo/p；k_hp = k * real(prod(-z)/prod(-p))（z 为空，prod(-z)=1）
+    // lp2hp_zpk: p_hp = wo/p; k_hp = k * real(prod(-z)/prod(-p)) (z is empty, prod(-z)=1)
     Cx prod_neg_p{1.0, 0.0};
     for (const Cx& p : p_lp) {
         prod_neg_p = cx_mul(prod_neg_p, Cx{-p.r, -p.i});
@@ -119,8 +119,8 @@ void butter_highpass_ba(int order, double cutoff_hz, double fs,
             cx_div(Cx{warped, 0.0}, p_lp[static_cast<std::size_t>(k)]);
     }
 
-    // bilinear_zpk：z_z = (4+0)/(4-0) = 1；p_z = (4+p_hp)/(4-p_hp)
-    //   k_z = k * real(prod(4-z_hp)/prod(4-p_hp))（z_hp 为全 0，prod(4-z)=4^N）
+    // bilinear_zpk: z_z = (4+0)/(4-0) = 1; p_z = (4+p_hp)/(4-p_hp)
+    //   k_z = k * real(prod(4-z_hp)/prod(4-p_hp)) (z_hp is all 0, prod(4-z)=4^N)
     const double fs2 = 2.0 * warp_fs;
     std::vector<Cx> z_z(static_cast<std::size_t>(n), Cx{1.0, 0.0});
     std::vector<Cx> p_z(static_cast<std::size_t>(n));
@@ -128,13 +128,13 @@ void butter_highpass_ba(int order, double cutoff_hz, double fs,
     Cx prod_4mp{1.0, 0.0};
     for (int k = 0; k < n; ++k) {
         const Cx& p = p_hp[static_cast<std::size_t>(k)];
-        prod_4mz = cx_mul(prod_4mz, Cx{fs2 - 0.0, 0.0 - 0.0});  // 4 - z_hp（z_hp=0）
+        prod_4mz = cx_mul(prod_4mz, Cx{fs2 - 0.0, 0.0 - 0.0});  // 4 - z_hp (z_hp=0)
         prod_4mp = cx_mul(prod_4mp, Cx{fs2 - p.r, 0.0 - p.i});
         p_z[static_cast<std::size_t>(k)] = cx_div(Cx{fs2 + p.r, 0.0 + p.i}, Cx{fs2 - p.r, 0.0 - p.i});
     }
     const double k_z = k_hp * cx_div(prod_4mz, prod_4mp).r;
 
-    // zpk2tf：b = k*poly(z)（共轭对称 → 取实部）；a = poly(p)（取实部）
+    // zpk2tf: b = k*poly(z) (conjugate-symmetric -> take real part); a = poly(p) (take real part)
     const std::vector<Cx> bz = poly_from_roots(z_z);
     const std::vector<Cx> az = poly_from_roots(p_z);
     b->resize(static_cast<std::size_t>(n) + 1);
@@ -147,7 +147,7 @@ void butter_highpass_ba(int order, double cutoff_hz, double fs,
 
 std::vector<double> lfilter(const std::vector<double>& b, const std::vector<double>& a,
                             const std::vector<double>& x) {
-    // scipy.signal.lfilter：transposed direct form II，零初值，a[0] 归一化
+    // scipy.signal.lfilter: transposed direct form II, zero initial state, a[0] normalized
     std::vector<double> bn = b;
     std::vector<double> an = a;
     const double a0 = an.empty() ? 1.0 : an[0];
@@ -158,7 +158,7 @@ std::vector<double> lfilter(const std::vector<double>& b, const std::vector<doub
         v /= a0;
     }
 
-    const std::size_t n = std::max(a.size(), b.size()) - 1;  // 阶数
+    const std::size_t n = std::max(a.size(), b.size()) - 1;  // order
     std::vector<double> y(x.size(), 0.0);
     std::vector<double> z(n, 0.0);
 

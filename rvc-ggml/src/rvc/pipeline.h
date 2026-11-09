@@ -1,7 +1,7 @@
 // pipeline.h
-// RVC 全链路离线转换管线（对齐 infer/modules/vc/pipeline.py）：
-//   16k 音频 -> 48Hz 高通 -> 静音点切块 -> HuBERT 特征 ->(检索混合)-> ×2 插值
-//   -> protect 混合 -> VITS（RMVPE f0 / SineGen 激励）-> RMS 混合 ->(重采样)-> int16
+// RVC full offline conversion pipeline (aligned with infer/modules/vc/pipeline.py):
+//   16k audio -> 48Hz high-pass -> chunking at silent points -> HuBERT features ->(retrieval blending)-> ×2 interpolation
+//   -> protect blending -> VITS (RMVPE f0 / SineGen excitation) -> RMS blending ->(resample)-> int16
 
 #pragma once
 
@@ -20,7 +20,7 @@ namespace rvc {
     class RetrievalIndex;
 
     struct PipelineConfig {
-        // 对齐 configs/config.py device_config()（CPU/非 half：1/6/38/41）
+        // Aligned with configs/config.py device_config() (CPU/non-half: 1/6/38/41)
         int x_pad = 1;
         int x_query = 6;
         int x_center = 38;
@@ -28,17 +28,17 @@ namespace rvc {
     };
 
     struct ConvertOptions {
-        int f0_up_key = 0;              // 半音
+        int f0_up_key = 0;              // semitones
         int sid = 0;
         float index_rate = 0.0f;
         float protect = 0.33f;
         float rms_mix_rate = 1.0f;
-        int resample_sr = 0;            // 0 = 不重采样
-        int filter_radius = 3;          // rmvpe 不使用（保留对齐接口）
+        int resample_sr = 0;            // 0 = no resampling
+        int filter_radius = 3;          // unused by rmvpe (kept for interface alignment)
         const RetrievalIndex* index = nullptr;
-        // 确定性验证：非空时按 e2e_call{i}_{rnd,sine_noise}.raw 注入噪声
+        // Deterministic validation: when non-empty, inject noise from e2e_call{i}_{rnd,sine_noise}.raw
         std::string noise_dir;
-        // 验证用：以参考 e2e_call{i}_pitchf.raw 覆盖本块 f0（隔离 RMVPE 近似并列翻转）
+        // For validation: overwrite this chunk's f0 with reference e2e_call{i}_pitchf.raw (isolates near-tie flips in RMVPE)
         bool f0_inject = false;
         bool verbose = true;
     };
@@ -58,7 +58,7 @@ namespace rvc {
 
         const vits::Config& voice_config() const;
 
-        // audio_16k: 单声道 16k 浮点（调用方负责加载/重采样）
+        // audio_16k: mono 16k float (caller handles loading/resampling)
         ConvertResult convert(const std::vector<float>& audio_16k, const ConvertOptions& opt);
 
     private:

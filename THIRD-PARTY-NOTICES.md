@@ -1,15 +1,16 @@
-# 第三方组件与许可证声明（THIRD-PARTY NOTICES）
+# Third-Party Components and License Notices
 
-本项目包含/依赖以下第三方组件。各自的许可证原文如下；`rvc-ggml/include/`
-下的单头库其许可证同时内嵌于头文件中。
+This project contains/depends on the following third-party components. Their license texts
+follow; the licenses of the single-header libraries under `rvc-ggml/include/` are also
+embedded in the header files themselves.
 
 ---
 
-## 1. ggml（推理后端，运行时依赖）
+## 1. ggml (inference backend, runtime dependency)
 
-- 来源：https://github.com/ggml-org/ggml （构建时通过 FetchContent 拉取 v0.23.0，
-  并自动应用 `rvc-ggml/patches/ggml-vulkan-matmul-n-split.patch`，补丁亦以 MIT 兼容方式分发）
-- 许可证：MIT
+- Source: https://github.com/ggml-org/ggml (pulled at build time via FetchContent as v0.23.0,
+  with `rvc-ggml/patches/ggml-vulkan-matmul-n-split.patch` applied automatically; the patch is also distributed in an MIT-compatible way)
+- License: MIT
 
 ```
 MIT License
@@ -37,11 +38,11 @@ SOFTWARE.
 
 ---
 
-## 2. train.cpp（训练库，git submodule）
+## 2. train.cpp (training library, git submodule)
 
-- 来源：https://github.com/Chui-Las/train.cpp （`third_party/train.cpp`）
-- 固定版本：v0.4.0（commit `e99d74b`）
-- 许可证：MIT（随 submodule 自带 LICENSE 文件）
+- Source: https://github.com/Chui-Las/train.cpp (`third_party/train.cpp`)
+- Pinned version: v0.4.0 (commit `e99d74b`)
+- License: MIT (LICENSE file shipped with the submodule)
 
 ```
 MIT License
@@ -69,19 +70,21 @@ SOFTWARE.
 
 ---
 
-## 3. RVC（Retrieval-based-Voice-Conversion-WebUI，语义基准与模型生态）
+## 3. RVC (Retrieval-based-Voice-Conversion-WebUI, semantic baseline and model ecosystem)
 
-本项目（rvc-ggml 与 rvc-train-ggml）是对原版 RVC 训练/推理语义的 C++/ggml 重新实现；
-本仓库本身不包含原版 RVC 的代码，但：
+This project (rvc-ggml and rvc-train-ggml) is a C++/ggml reimplementation of the original
+RVC training/inference semantics; this repository itself does not contain the original RVC
+code, but:
 
-- 模型/权重的转换脚本（`scripts/export_gguf.py`、`tools/pth_to_train_gguf.py`）
-  以原版 RVC 的模型产物（`.pt/.pth/.index`）为输入；
-- 训练配置模板（`rvc-train-ggml/configs/`）字段语义源自原版 RVC 的官方配置。
+- The model/weight conversion scripts (`scripts/export_gguf.py`, `tools/pth_to_train_gguf.py`)
+  take the original RVC model artifacts (`.pt/.pth/.index`) as input;
+- The field semantics of the training config templates (`rvc-train-ggml/configs/`) originate
+  from the official configuration of the original RVC.
 
-原版项目与许可证：
+Original project and license:
 
-- 来源：https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
-- 许可证：MIT
+- Source: https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+- License: MIT
 
 ```
 MIT License
@@ -109,17 +112,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-> 注意：由用户从原版 RVC 资产转换得到的模型文件（hubert/rmvpe/角色模型/检索索引）
-> 受其原始许可与版权约束，不属于本仓库的 MIT 授权范围。
+> Note: model files converted by users from original RVC assets (hubert/rmvpe/character
+> models/retrieval indexes) are subject to their original licenses and copyrights and are
+> not covered by this repository's MIT license.
 
 ---
 
-## 4. dr_wav（WAV 读写，rvc-ggml/include/dr_wav.h，vendored 单头库）
+## 4. dr_wav (WAV I/O, rvc-ggml/include/dr_wav.h, vendored single-header library)
 
-- 来源：https://github.com/mackron/dr_libs （v0.14.6）
-- 许可证：公有领域（Unlicense）或 MIT-0 双许可，任选其一（原文内嵌于头文件末尾）
+- Source: https://github.com/mackron/dr_libs (v0.14.6)
+- License: public domain (Unlicense) or MIT-0, dual-licensed, either one at your option (text embedded at the end of the header)
 
-MIT-0 原文：
+MIT-0 text:
 
 ```
 MIT No Attribution
@@ -144,10 +148,10 @@ SOFTWARE.
 
 ---
 
-## 5. pocketfft_hdronly（实数 FFT，rvc-ggml/include/pocketfft_hdronly.h，vendored 单头库）
+## 5. pocketfft_hdronly (real FFT, rvc-ggml/include/pocketfft_hdronly.h, vendored single-header library)
 
-- 来源：https://gitlab.mpcdf.mpg.de/mtr/pocketfft （及 https://github.com/mreineck/pocketfft ）
-- 许可证：BSD 3-Clause（原文内嵌于头文件）
+- Source: https://gitlab.mpcdf.mpg.de/mtr/pocketfft (and https://github.com/mreineck/pocketfft)
+- License: BSD 3-Clause (text embedded in the header)
 
 ```
 This file is part of pocketfft.

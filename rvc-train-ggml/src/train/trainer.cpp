@@ -1,8 +1,8 @@
-// RVC-Train-GGML - M5-3 训练循环实现（src/train/trainer.cpp）
+// RVC-Train-GGML - M5-3 training loop implementation (src/train/trainer.cpp)
 //
-// 语义基准：官方 81eed5e train/train.py + data_utils.py（见 `交接说明` §4.9 A/D）。
-// v1 简化（Q25）：单桶图（TrainStep 固定形状；超出图 T 的样本跳过并日志）。
-// M7-3：梯度累积（grad_accum）；M7-4：epoch 快照/汇总 + 每 N epoch 导出；M7-5：续训元数据。
+// Semantic baseline: official 81eed5e train/train.py + data_utils.py (see `docs/handover.md` §4.9 A/D).
+// v1 simplification (Q25): single-bucket graph (TrainStep fixed shape; samples exceeding graph T are skipped and logged).
+// M7-3: gradient accumulation (grad_accum); M7-4: epoch snapshots/summary + export every N epochs; M7-5: resume metadata.
 #include "train/trainer.h"
 
 #include "common/json.h"
@@ -96,7 +96,7 @@ void json_arr_i32(const common::JsonValue* obj, const char* key, std::vector<int
 bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "trainer_config_from_json_text: out 为空";
+            *err = "trainer_config_from_json_text: out is null";
         }
         return false;
     }
@@ -106,7 +106,7 @@ bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, 
     }
     if (!root.is_object()) {
         if (err != nullptr) {
-            *err = "配置根不是 JSON 对象";
+            *err = "config root is not a JSON object";
         }
         return false;
     }
@@ -182,12 +182,12 @@ bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, 
         out->q_channels = json_int(mo, "inter_channels", out->q_channels);
     }
 
-    // ---------------- 模型结构（config data/model 段；M7-2 scratch 用）----------------
-    // 默认取 v1-40k（项目首期目标）；config `model` 段有值则覆盖。
+    // ---------------- model structure (config data/model sections; used by M7-2 scratch) ----------------
+    // Defaults to v1-40k (the project's initial target); the config `model` section overrides when present.
     model::ModelConfig& M = out->model_cfg;
     M = model::default_model_config_v1_40k();
     if (mo != nullptr && mo->is_object()) {
-        // V2-2：version=="v2" 时以 v2-48k 为回退基底（避免缺省字段回退到 v1 默认），随后逐字段覆盖。
+        // V2-2: when version=="v2" use v2-48k as the fallback base (so omitted fields do not fall back to v1 defaults), then override field by field.
         const std::string ver = json_str(mo, "version", M.version);
         if (ver == "v2") {
             M = model::default_model_config_v2_48k();
@@ -207,7 +207,7 @@ bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, 
             json_int(mo, "upsample_initial_channel", M.upsample_initial_channel);
         M.resblock = json_str(mo, "resblock", M.resblock);
         json_arr_i32(mo, "resblock_kernel_sizes", &M.resblock_kernel_sizes);
-        // resblock_dilation_sizes 支持嵌套 [[..],[..]] 或扁平
+        // resblock_dilation_sizes supports nested [[..],[..]] or flat forms
         const common::JsonValue* dil = mo->find("resblock_dilation_sizes");
         if (dil != nullptr && dil->is_array()) {
             M.resblock_dilation_sizes.clear();
@@ -228,7 +228,7 @@ bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, 
         json_arr_i32(mo, "upsample_kernel_sizes", &M.upsample_kernel_sizes);
         json_arr_i32(mo, "d_periods", &M.d_periods);
     }
-    // data 段 → 音频/谱
+    // data section -> audio/spectrogram
     M.sample_rate = (int64_t) out->sr;
     M.filter_length = out->n_fft;
     M.win_length = out->win;
@@ -238,7 +238,7 @@ bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, 
     M.mel_fmax = (float) (out->fmax > 0.0 ? out->fmax : 0.0);
     M.spec_channels = out->n_fft / 2 + 1;
     M.segment_size = out->segment_samples;
-    // d_periods 未显式给出时按 version 推导
+    // When d_periods is not given explicitly, derive it from version
     if (M.d_periods.empty()) {
         M.d_periods = M.is_v2() ? std::vector<int32_t>{2, 3, 5, 7, 11, 17, 23, 37}
                                 : std::vector<int32_t>{2, 3, 5, 7, 11, 17};
@@ -250,7 +250,7 @@ bool trainer_config_from_json(const std::string& path, TrainerConfig* out, std::
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法打开训练配置: " + path;
+            *err = "cannot open training config: " + path;
         }
         return false;
     }
@@ -277,7 +277,7 @@ void json_write_d(std::string* out, double v) {
 bool trainer_config_to_json(const TrainerConfig& cfg, std::string* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "trainer_config_to_json: out 为空";
+            *err = "trainer_config_to_json: out is null";
         }
         return false;
     }
@@ -388,7 +388,7 @@ bool trainer_config_write_json(const TrainerConfig& cfg, const std::string& path
         std::filesystem::create_directories(p.parent_path(), ec);
         if (ec) {
             if (err != nullptr) {
-                *err = "创建配置目录失败: " + p.parent_path().string() + " (" + ec.message() + ")";
+                *err = "failed to create config directory: " + p.parent_path().string() + " (" + ec.message() + ")";
             }
             return false;
         }
@@ -400,14 +400,14 @@ bool trainer_config_write_json(const TrainerConfig& cfg, const std::string& path
     std::ofstream f(path, std::ios::trunc | std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法写入训练配置: " + path;
+            *err = "cannot write training config: " + path;
         }
         return false;
     }
     f << text;
     if (!f.good()) {
         if (err != nullptr) {
-            *err = "写入训练配置失败: " + path;
+            *err = "failed to write training config: " + path;
         }
         return false;
     }
@@ -420,7 +420,7 @@ bool trainer_config_equivalent(const TrainerConfig& a, const TrainerConfig& b, s
     std::string err;
     if (!trainer_config_to_json(a, &ja, &err) || !trainer_config_to_json(b, &jb, &err)) {
         if (diff != nullptr) {
-            *diff = "序列化失败: " + err;
+            *diff = "serialization failed: " + err;
         }
         return false;
     }
@@ -438,11 +438,11 @@ bool trainer_config_equivalent(const TrainerConfig& a, const TrainerConfig& b, s
             la = ja.substr(ia, ea == std::string::npos ? std::string::npos : ea - ia);
             lb = jb.substr(ib, eb == std::string::npos ? std::string::npos : eb - ib);
             if (la != lb) {
-                *diff = "首个差异: 期望 \"" + lb + "\" 实得 \"" + la + "\"";
+                *diff = "first difference: expected \"" + lb + "\" got \"" + la + "\"";
                 break;
             }
             if (ea == std::string::npos || eb == std::string::npos) {
-                *diff = "配置长度/字段不一致";
+                *diff = "config length/fields differ";
                 break;
             }
             ia = ea + 1;
@@ -452,7 +452,7 @@ bool trainer_config_equivalent(const TrainerConfig& a, const TrainerConfig& b, s
     return false;
 }
 
-// ---------------------------------------------------------------- 生命周期
+// ---------------------------------------------------------------- lifecycle
 
 Trainer::~Trainer() {
     if (log_file_.is_open()) {
@@ -482,20 +482,20 @@ bool Trainer::fail(std::string* err, const std::string& msg) const {
 Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::string* err) {
     if (dev == nullptr) {
         if (err != nullptr) {
-            *err = "Trainer::create: 设备为空";
+            *err = "Trainer::create: device is null";
         }
         return nullptr;
     }
     if (cfg.exp_dir.empty() || cfg.weights_g.empty() || cfg.weights_d.empty() ||
         cfg.out_dir.empty()) {
         if (err != nullptr) {
-            *err = "Trainer::create: 需要 exp_dir/weights_g/weights_d/out_dir";
+            *err = "Trainer::create: exp_dir/weights_g/weights_d/out_dir required";
         }
         return nullptr;
     }
     if (cfg.batch_size <= 0) {
         if (err != nullptr) {
-            *err = "Trainer::create: batch_size 非法（需 >= 1）";
+            *err = "Trainer::create: invalid batch_size (must be >= 1)";
         }
         return nullptr;
     }
@@ -522,13 +522,13 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
         return nullptr;
     }
 
-    // 版本一致性预检（V2-8）：G 权重特征维须与缓存特征维一致，否则 train_step 会以晦涩的
-    // "批次字段 phone 元素数不符（got != want）" 报错；此处提前给出明确原因（v1=256 / v2=768）。
+    // Version-consistency precheck (V2-8): the G weight feature dim must match the cache feature dim; otherwise
+    // train_step fails with the cryptic "batch field phone element count mismatch (got != want)"; the cause is reported up front here (v1=256 / v2=768).
     {
         std::string werr;
         model::TrainWeights* gw = model::TrainWeights::open(cfg.weights_g, &werr);
         if (gw == nullptr) {
-            t->fail(err, "Trainer::create: 打开 G 权重失败: " + werr);
+            t->fail(err, "Trainer::create: failed to open G weights: " + werr);
             return nullptr;
         }
         model::TrainMeta gmeta;
@@ -539,7 +539,7 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
         std::string derr;
         model::TrainWeights* dw = model::TrainWeights::open(cfg.weights_d, &derr);
         if (dw == nullptr) {
-            t->fail(err, "Trainer::create: 打开 D 权重失败: " + derr);
+            t->fail(err, "Trainer::create: failed to open D weights: " + derr);
             return nullptr;
         }
         model::TrainMeta dmeta;
@@ -548,8 +548,8 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
         const model::ModelConfig dm = model::ModelConfig::from_meta(dmeta);
 
         if (gm.version != dm.version) {
-            t->fail(err, "G 权重版本(" + gm.version + ") 与 D 权重版本(" + dm.version +
-                              ") 不一致；请使用同一套版本的 G/D（v1 或 v2）。");
+            t->fail(err, "G weights version (" + gm.version + ") and D weights version (" + dm.version +
+                              ") differ; use G/D from the same version (v1 or v2).");
             return nullptr;
         }
         const int64_t want_feat = gm.is_v2() ? 768 : 256;
@@ -558,11 +558,11 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
             cache_feat = t->ds_.cache().samples[0].feat_dim;
         }
         if (cache_feat != 0 && cache_feat != want_feat) {
-            t->fail(err, "模型与训练缓存不匹配：G 权重为 " + gm.version + "（特征维 " +
-                              std::to_string(want_feat) + "），但缓存特征维为 " +
-                              std::to_string(cache_feat) + "（缓存版本 " +
+            t->fail(err, "model and training cache do not match: G weights are " + gm.version + " (feature dim " +
+                              std::to_string(want_feat) + "), but the cache feature dim is " +
+                              std::to_string(cache_feat) + " (cache version " +
                               t->ds_.cache().meta.version +
-                              "）。请使用与缓存版本一致的权重与 config（v1=256 / v2=768）。");
+                              "). Use weights and config consistent with the cache version (v1=256 / v2=768).");
             return nullptr;
         }
     }
@@ -575,7 +575,7 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
     }
     if (bucket < cfg.segment_frames) {
         if (err != nullptr) {
-            *err = "Trainer::create: bucket T 非法（需 >= segment_frames；请在 config/CLI 指定）";
+            *err = "Trainer::create: invalid bucket T (must be >= segment_frames; specify it in config/CLI)";
         }
         return nullptr;
     }
@@ -591,16 +591,16 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
     }
     if (t->sample_indices_.empty()) {
         if (err != nullptr) {
-            *err = "Trainer::create: bucket 内无可用样本（可增大 --bucket）";
+            *err = "Trainer::create: no usable samples within the bucket (try a larger --bucket)";
         }
         return nullptr;
     }
-    // M7-3：一个优化步 = K 个 micro-batch；steps_per_epoch 以优化步计（尾部不足一组丢弃）
+    // M7-3: one optimizer step = K micro-batches; steps_per_epoch counts optimizer steps (a trailing incomplete group is dropped)
     const int64_t accum = std::max<int64_t>(1, cfg.grad_accum);
     t->steps_per_epoch_ = ((int64_t) t->sample_indices_.size() / cfg.batch_size) / accum;
     if (t->steps_per_epoch_ <= 0) {
         if (err != nullptr) {
-            *err = "Trainer::create: 可训练样本不足一个优化步（batch×grad_accum）";
+            *err = "Trainer::create: not enough trainable samples for one optimizer step (batch×grad_accum)";
         }
         return nullptr;
     }
@@ -626,7 +626,7 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
     t->sched_d_ = traincpp::lr_scheduler_exponential_new(t->ts_->optim_d(), cfg.lr_decay);
     if (t->sched_g_ == nullptr || t->sched_d_ == nullptr) {
         if (err != nullptr) {
-            *err = "Trainer::create: ExponentialLR 调度器创建失败";
+            *err = "Trainer::create: failed to create the ExponentialLR scheduler";
         }
         return nullptr;
     }
@@ -655,7 +655,7 @@ Trainer* Trainer::create(const TrainerConfig& cfg, traincpp::Device* dev, std::s
     return t.release();
 }
 
-// ---------------------------------------------------------------- 循环
+// ---------------------------------------------------------------- loop
 
 bool Trainer::rebuild_epoch_batches(int64_t epoch, std::string* err) {
     std::vector<int64_t> order = sample_indices_;
@@ -673,7 +673,7 @@ bool Trainer::rebuild_epoch_batches(int64_t epoch, std::string* err) {
     }
     const int64_t dropped = (int64_t) order.size() - n_batches * cfg_.batch_size;
     if (dropped > 0) {
-        std::printf("[trainer] epoch %lld：尾部 %lld 个样本不足一个 batch，按 M5 简化丢弃\n",
+        std::printf("[trainer] epoch %lld: trailing %lld samples do not fill a batch, dropped per the M5 simplification\n",
                     (long long) epoch, (long long) dropped);
     }
     epoch_batches_epoch_ = epoch;
@@ -687,7 +687,7 @@ bool Trainer::build_batch_into(const std::vector<int64_t>& indices, data::BatchB
     if (!ds_.build_batch(indices, bucket_, &rng_, nullptr, out, err)) {
         return false;
     }
-    // 测试尺度：D 输入截断到 disc_len（每样本前 disc_len 个采样；ne [L,1,B] 逐样本连续）。
+    // Test scale: truncate the D input to disc_len (the first disc_len samples per sample; ne [L,1,B] is contiguous per sample).
     if (cfg_.disc_len > 0 && cfg_.disc_len < cfg_.segment_samples) {
         const int64_t d = cfg_.disc_len;
         const int64_t l = cfg_.segment_samples;
@@ -720,16 +720,16 @@ bool Trainer::run_one_step(std::string* err) {
             return false;
         }
     }
-    // M7-3：一个优化步消费 K=grad_accum 个连续 micro-batch；batch_pos_ 以优化步为单位
+    // M7-3: one optimizer step consumes K=grad_accum consecutive micro-batches; batch_pos_ counts optimizer steps
     const int64_t accum = std::max<int64_t>(1, cfg_.grad_accum);
     const int64_t n_batches = (int64_t) epoch_batches_.size();
-    const int64_t n_groups = n_batches / accum;  // 尾部不足一组丢弃
+    const int64_t n_groups = n_batches / accum;  // a trailing incomplete group is dropped
     if (n_groups <= 0) {
         finished_ = true;
         return true;
     }
     if (batch_pos_ < 0 || batch_pos_ >= n_groups) {
-        return fail(err, "Trainer: 优化步位置越界（内部状态错误）");
+        return fail(err, "Trainer: optimizer step position out of range (internal state error)");
     }
     const int64_t start = batch_pos_ * accum;
 
@@ -760,7 +760,7 @@ bool Trainer::run_one_step(std::string* err) {
     log_step(last_, to_console);
 
     if (batch_pos_ >= n_groups) {
-        // 官方：ExponentialLR 每 epoch 各步进一次（train.py:283-288）
+        // Official: ExponentialLR steps once per epoch (train.py:283-288)
         traincpp::lr_scheduler_step(sched_g_);
         traincpp::lr_scheduler_step(sched_d_);
         ++epoch_;
@@ -794,37 +794,37 @@ bool Trainer::run(std::string* err) {
         write_run_json();
     }
     const TrainStepMemory m = ts_->memory();
-    std::printf("[trainer] 完成：steps=%lld epochs=%lld lr_g=%.3e lr_d=%.3e "
+    std::printf("[trainer] done: steps=%lld epochs=%lld lr_g=%.3e lr_d=%.3e "
                 "loss_disc=%.6f loss_gen_all=%.6f loss_gen=%.6f loss_fm=%.6f loss_mel=%.6f "
                 "loss_kl=%.6f\n",
                 (long long) step_count(), (long long) epoch_, (double) lr_g(), (double) lr_d(),
                 (double) last_.loss_disc, (double) last_.loss_gen_all,
                 (double) last_.loss_gen, (double) last_.loss_fm, (double) last_.loss_mel,
                 (double) last_.loss_kl);
-    std::printf("[trainer] buf_g=%.1f MiB buf_d=%.1f MiB；日志 %s；checkpoint %s\n",
+    std::printf("[trainer] buf_g=%.1f MiB buf_d=%.1f MiB; log %s; checkpoint %s\n",
                 (double) m.buf_g_bytes / (1024.0 * 1024.0),
                 (double) m.buf_d_bytes / (1024.0 * 1024.0), log_path_.c_str(),
                 ckpt_path_.c_str());
-    std::printf("[trainer] 步时：首步=%.1f ms 均值=%.1f ms（采样 %lld 步）\n", first_step_ms_,
+    std::printf("[trainer] step time: first=%.1f ms avg=%.1f ms (%lld steps sampled)\n", first_step_ms_,
                 mean_step_ms(), (long long) timed_steps_);
     return true;
 }
 
-// ---------------------------------------------------------------- 日志
+// ---------------------------------------------------------------- logging
 
 bool Trainer::open_logs(std::string* err) {
     std::error_code ec;
     std::filesystem::create_directories(cfg_.out_dir, ec);
     if (ec) {
-        return fail(err, "创建输出目录失败: " + cfg_.out_dir + " (" + ec.message() + ")");
+        return fail(err, "failed to create output directory: " + cfg_.out_dir + " (" + ec.message() + ")");
     }
     log_file_.open(log_path_, std::ios::app);
     if (!log_file_.is_open()) {
-        return fail(err, "无法写入 train.log: " + log_path_);
+        return fail(err, "cannot write train.log: " + log_path_);
     }
     csv_file_.open(csv_path_, std::ios::app);
     if (!csv_file_.is_open()) {
-        return fail(err, "无法写入 loss.csv: " + csv_path_);
+        return fail(err, "cannot write loss.csv: " + csv_path_);
     }
     std::error_code se;
     const auto size = std::filesystem::file_size(csv_path_, se);
@@ -834,7 +834,7 @@ bool Trainer::open_logs(std::string* err) {
     }
     epochs_file_.open(epochs_csv_path_, std::ios::app);
     if (!epochs_file_.is_open()) {
-        return fail(err, "无法写入 epochs.csv: " + epochs_csv_path_);
+        return fail(err, "cannot write epochs.csv: " + epochs_csv_path_);
     }
     std::error_code se2;
     const auto esize = std::filesystem::file_size(epochs_csv_path_, se2);
@@ -842,17 +842,17 @@ bool Trainer::open_logs(std::string* err) {
         epochs_file_ << "epoch,step,lr_g,lr_d,loss_disc,loss_gen_all,loss_gen,loss_fm,loss_mel,loss_kl\n";
         epochs_file_.flush();
     }
-    log_file_ << "[trainer] 启动：bucket=" << bucket_ << " batch=" << cfg_.batch_size
+    log_file_ << "[trainer] startup: bucket=" << bucket_ << " batch=" << cfg_.batch_size
               << " samples=" << sample_indices_.size() << " skipped=" << skipped_samples_
               << " steps/epoch=" << steps_per_epoch_ << " epochs=" << cfg_.epochs
               << " max_steps=" << cfg_.max_steps << " seed=" << cfg_.seed << "\n";
     log_file_.flush();
-    // 控制台同步打印启动摘要（含 steps/epoch 与总步数估算，便于直接决定训练规模）
+    // Also print the startup summary to the console (including steps/epoch and the total-step estimate, to directly gauge the training scale)
     const long long total_steps =
         cfg_.max_steps > 0 ? (long long) cfg_.max_steps
                            : (long long) cfg_.epochs * (long long) steps_per_epoch_;
-    std::printf("[trainer] 启动：bucket=%lld batch=%lld samples=%lld skipped=%lld "
-                "steps/epoch=%lld epochs=%lld max_steps=%lld seed=%lld（预计总优化步≈%lld）\n",
+    std::printf("[trainer] startup: bucket=%lld batch=%lld samples=%lld skipped=%lld "
+                "steps/epoch=%lld epochs=%lld max_steps=%lld seed=%lld (est. total optimization steps ~=%lld)\n",
                 (long long) bucket_, (long long) cfg_.batch_size,
                 (long long) sample_indices_.size(), (long long) skipped_samples_,
                 (long long) steps_per_epoch_, (long long) cfg_.epochs, (long long) cfg_.max_steps,
@@ -889,7 +889,7 @@ void Trainer::log_step(const TrainStepLosses& L, bool to_console) {
 void Trainer::write_run_json() const {
     std::ofstream f(cfg_.export_run_json, std::ios::trunc);
     if (!f.is_open()) {
-        std::printf("[trainer] 警告：无法写 run JSON: %s\n", cfg_.export_run_json.c_str());
+        std::printf("[trainer] warning: cannot write run JSON: %s\n", cfg_.export_run_json.c_str());
         return;
     }
     const TrainStepMemory m = ts_->memory();
@@ -931,10 +931,10 @@ void Trainer::write_run_json() const {
     f << "],\n";
     f << "  \"checkpoint\": \"" << json_escape(ckpt_path_) << "\"\n";
     f << "}\n";
-    std::printf("[trainer] 运行摘要已写出: %s\n", cfg_.export_run_json.c_str());
+    std::printf("[trainer] run summary written: %s\n", cfg_.export_run_json.c_str());
 }
 
-// ---------------------------------------------------------------- M7-4 epoch 边界
+// ---------------------------------------------------------------- M7-4 epoch boundary
 
 bool Trainer::on_epoch_end(std::string* err) {
     write_epoch_summary();
@@ -964,14 +964,14 @@ void Trainer::write_epoch_summary() {
         epochs_file_.flush();
     }
     if (log_file_.is_open()) {
-        log_file_ << "[trainer] epoch " << epoch_ << " 汇总 step " << step_count() << " lr_g "
+        log_file_ << "[trainer] epoch " << epoch_ << " summary step " << step_count() << " lr_g "
                   << lr_g() << " lr_d " << lr_d() << " loss_disc " << L.loss_disc
                   << " loss_gen_all " << L.loss_gen_all << " loss_gen " << L.loss_gen
                   << " loss_fm " << L.loss_fm << " loss_mel " << L.loss_mel << " loss_kl "
                   << L.loss_kl << "\n";
         log_file_.flush();
     }
-    std::printf("[trainer] epoch %lld 汇总 step=%lld lr_g=%.3e loss_gen_all=%.6f\n",
+    std::printf("[trainer] epoch %lld summary step=%lld lr_g=%.3e loss_gen_all=%.6f\n",
                 (long long) epoch_, (long long) step_count(), (double) lr_g(),
                 (double) L.loss_gen_all);
 }
@@ -982,8 +982,8 @@ bool Trainer::save_epoch_snapshot(int64_t epoch, std::string* err) {
     return save_checkpoint(path, err);
 }
 
-// 解析 out_dir 下 train.ep{N}.ckpt.gguf，仅保留最新 snapshot_keep 个（连同同名
-// snapshot/export 文件一并清理）；snapshot_keep<=0 表示全部保留。
+// Parse train.ep{N}.ckpt.gguf under out_dir and keep only the newest snapshot_keep of them (removing the
+// same-named snapshot/export files together); snapshot_keep<=0 means keep all.
 bool Trainer::prune_snapshots(std::string* err) {
     if (cfg_.snapshot_keep <= 0) {
         return true;
@@ -991,7 +991,7 @@ bool Trainer::prune_snapshots(std::string* err) {
     namespace fs = std::filesystem;
     const std::string pre = "train.ep";
     const std::string suf = ".ckpt.gguf";
-    std::vector<std::pair<int64_t, std::string>> snaps;  // (epoch, N 字符串)
+    std::vector<std::pair<int64_t, std::string>> snaps;  // (epoch, N string)
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(cfg_.out_dir, ec)) {
         if (ec || !entry.is_regular_file()) {
@@ -1024,18 +1024,18 @@ bool Trainer::prune_snapshots(std::string* err) {
     return true;
 }
 
-// 实时 G 参数 → 训练态 GGUF 快照 → 推理 GGUF（复用 M6 导出器）
+// Live G parameters -> training-state GGUF snapshot -> inference GGUF (reuses the M6 exporter)
 bool Trainer::export_epoch_inference(int64_t epoch, std::string* err) {
     std::string e;
     model::TrainWeights* wg = model::TrainWeights::open(cfg_.weights_g, &e);
     if (wg == nullptr) {
-        return fail(err, "导出推理 GGUF：打开 G 权重失败: " + e);
+        return fail(err, "export inference GGUF: failed to open G weights: " + e);
     }
     model::TrainMeta mg;
     const bool meta_ok = wg->read_meta(&mg);
     delete wg;
     if (!meta_ok) {
-        return fail(err, "导出推理 GGUF：读取 G 元数据失败");
+        return fail(err, "export inference GGUF: failed to read G metadata");
     }
     const model::ModelConfig gcfg = model::ModelConfig::from_meta(mg);
     const std::string n = std::to_string(epoch);
@@ -1043,13 +1043,13 @@ bool Trainer::export_epoch_inference(int64_t epoch, std::string* err) {
     const std::string out = join_path(cfg_.out_dir, "export.ep" + n + ".gguf");
     if (!exporter::export_train_gguf_live(gcfg, ts_->g_params(), snap,
                                           "rvc-train@epoch" + n, cfg_.weights_g, &e)) {
-        return fail(err, "导出推理 GGUF：写实时训练态 GGUF 失败: " + e);
+        return fail(err, "export inference GGUF: failed to write the live training-state GGUF: " + e);
     }
     exporter::ModelExportOptions opt;
     opt.in_path = snap;
     opt.out_path = out;
-    // 实时快照写盘时尾部 1 维被折叠（丢失真实维数）；用来源训练态 GGUF 的 ndims==3
-    // 名单强制展平（修复 O=1 Conv1d 权重，如 dec.conv_post.weight）。
+    // When the live snapshot is written the trailing 1-dim is collapsed (the real rank is lost); use the
+    // ndims==3 list of the source training-state GGUF to force flattening (fixes O=1 Conv1d weights, e.g. dec.conv_post.weight).
     {
         std::unordered_map<std::string, int> ndims;
         if (exporter::gguf_read_tensor_ndims(cfg_.weights_g, &ndims, nullptr)) {
@@ -1061,14 +1061,14 @@ bool Trainer::export_epoch_inference(int64_t epoch, std::string* err) {
         }
     }
     if (!exporter::export_inference_gguf(opt, &e)) {
-        return fail(err, "导出推理 GGUF：导出失败: " + e);
+        return fail(err, "export inference GGUF: export failed: " + e);
     }
-    std::printf("[trainer] epoch %lld 已导出推理 GGUF: %s（训练态快照 %s）\n", (long long) epoch,
+    std::printf("[trainer] epoch %lld exported inference GGUF: %s (training-state snapshot %s)\n", (long long) epoch,
                 out.c_str(), snap.c_str());
     return true;
 }
 
-// ---------------------------------------------------------------- M7-5 续训元数据
+// ---------------------------------------------------------------- M7-5 resume metadata
 
 void Trainer::compute_sample_fingerprint(int64_t* count, int64_t* total_frames,
                                          uint64_t* id_hash) const {
@@ -1111,51 +1111,51 @@ ResumeMeta Trainer::build_resume_meta() const {
 }
 
 bool Trainer::validate_resume_meta(const ResumeMeta& m, std::string* err) const {
-    // 1) 训练相关配置签名
+    // 1) training-related config signature
     const std::vector<std::string> cur = trainer_config_signature(cfg_);
     if (cur != m.config_signature) {
         std::string diff;
         const size_t n = std::min(cur.size(), m.config_signature.size());
         for (size_t i = 0; i < n; ++i) {
             if (cur[i] != m.config_signature[i]) {
-                diff = "存档 \"" + m.config_signature[i] + "\" / 现配置 \"" + cur[i] + "\"";
+                diff = "archive \"" + m.config_signature[i] + "\" / current \"" + cur[i] + "\"";
                 break;
             }
         }
         if (diff.empty()) {
-            diff = "字段数不一致（存档 " + std::to_string(m.config_signature.size()) +
-                   " / 现配置 " + std::to_string(cur.size()) + "）";
+            diff = "field count mismatch (archive " + std::to_string(m.config_signature.size()) +
+                   " / current " + std::to_string(cur.size()) + ")";
         }
-        return fail(err, "续训校验失败：训练配置与 checkpoint 不一致（" + diff +
-                             "）。如需更换配置请重新开始训练，不要在此 checkpoint 上续训。");
+        return fail(err, "resume validation failed: training config does not match the checkpoint (" + diff +
+                             "). To change the config, start training anew; do not resume from this checkpoint.");
     }
-    // 2) 样本集指纹（样本数 + 总帧数 + id 列表哈希）
+    // 2) sample-set fingerprint (sample count + total frames + id list hash)
     int64_t sc = 0;
     int64_t tf = 0;
     uint64_t ih = 0;
     compute_sample_fingerprint(&sc, &tf, &ih);
     if (sc != m.sample_count || tf != m.total_frames || ih != m.id_hash) {
-        return fail(err, "续训校验失败：样本集与 checkpoint 不一致（存档 count/frames/id_hash=" +
+        return fail(err, "resume validation failed: sample set does not match the checkpoint (archive count/frames/id_hash=" +
                              std::to_string((long long) m.sample_count) + "/" +
                              std::to_string((long long) m.total_frames) + "/" +
-                             std::to_string((unsigned long long) m.id_hash) + "，现 " +
+                             std::to_string((unsigned long long) m.id_hash) + ", current " +
                              std::to_string((long long) sc) + "/" + std::to_string((long long) tf) +
-                             "/" + std::to_string((unsigned long long) ih) + "）");
+                             "/" + std::to_string((unsigned long long) ih) + ")");
     }
-    // 3) 与 checkpoint 的优化器 step 交叉校验
+    // 3) cross-check the optimizer step against the checkpoint
     const int64_t step = step_count();
     if (m.step != step) {
-        return fail(err, "续训校验失败：checkpoint step=" + std::to_string((long long) step) +
-                             " 与元数据 step=" + std::to_string((long long) m.step) + " 不一致");
+        return fail(err, "resume validation failed: checkpoint step=" + std::to_string((long long) step) +
+                             " vs metadata step=" + std::to_string((long long) m.step) + " mismatch");
     }
-    // 4) epoch/batch_pos 与 step 自洽（steps_per_epoch_ 已由当前配置算出）
+    // 4) epoch/batch_pos consistent with step (steps_per_epoch_ has been computed from the current config)
     if (m.epoch < 0 || m.batch_pos < 0 || steps_per_epoch_ <= 0 || m.batch_pos >= steps_per_epoch_ ||
         m.epoch * steps_per_epoch_ + m.batch_pos != m.step) {
-        return fail(err, "续训校验失败：元数据 epoch/batch_pos 与 step 不自洽（epoch=" +
+        return fail(err, "resume validation failed: metadata epoch/batch_pos inconsistent with step (epoch=" +
                              std::to_string((long long) m.epoch) + " batch_pos=" +
                              std::to_string((long long) m.batch_pos) + " step=" +
                              std::to_string((long long) m.step) + " steps_per_epoch=" +
-                             std::to_string((long long) steps_per_epoch_) + "）");
+                             std::to_string((long long) steps_per_epoch_) + ")");
     }
     return true;
 }
@@ -1166,8 +1166,8 @@ bool Trainer::write_resume_meta(const std::string& ckpt_path, std::string* err) 
     if (!resume_meta_write(m, mp, err)) {
         return false;
     }
-    std::printf("[trainer] 续训元数据已写出: %s（epoch=%lld batch_pos=%lld step=%lld "
-                "config_hash=%016llx）\n",
+    std::printf("[trainer] resume metadata written: %s (epoch=%lld batch_pos=%lld step=%lld "
+                "config_hash=%016llx)\n",
                 mp.c_str(), (long long) m.epoch, (long long) m.batch_pos, (long long) m.step,
                 (unsigned long long) m.config_hash);
     return true;
@@ -1185,12 +1185,12 @@ bool Trainer::save_checkpoint(const std::string& path, std::string* err) {
     items.optimizers       = parts;
     items.optimizer_count  = 2;
     if (!traincpp::checkpoint_save(path.c_str(), items, "rvc-train")) {
-        return fail(err, "checkpoint_save 失败: " + path);
+        return fail(err, "checkpoint_save failed: " + path);
     }
     if (!write_resume_meta(path, err)) {
         return false;
     }
-    std::printf("[trainer] checkpoint 已保存: %s（step=%lld epoch=%lld lr_g=%.3e）\n",
+    std::printf("[trainer] checkpoint saved: %s (step=%lld epoch=%lld lr_g=%.3e)\n",
                 path.c_str(), (long long) step_count(), (long long) epoch_,
                 (double) lr_g());
     return true;
@@ -1208,15 +1208,15 @@ bool Trainer::load_checkpoint(const std::string& path, std::string* err) {
     items.optimizers      = parts;
     items.optimizer_count = 2;
     if (!traincpp::checkpoint_load(path.c_str(), items)) {
-        return fail(err, "checkpoint_load 失败: " + path);
+        return fail(err, "checkpoint_load failed: " + path);
     }
-    // M7-5：读取并校验旁挂续训元数据（epoch/batch_pos/配置指纹/样本指纹）
+    // M7-5: read and validate the sidecar resume metadata (epoch/batch_pos/config fingerprint/sample fingerprint)
     ResumeMeta meta;
     const std::string meta_path = resume_meta_path_for(path);
     std::string rerr;
     if (!resume_meta_read(meta_path, &meta, &rerr)) {
-        return fail(err, "续训校验失败：无法读取续训元数据 " + meta_path + "（" + rerr +
-                             "）。checkpoint 必须与同名 .meta.json 配套；缺失/损坏请勿续训。");
+        return fail(err, "resume validation failed: cannot read resume metadata " + meta_path + " (" + rerr +
+                             "). The checkpoint must be accompanied by the same-named .meta.json; do not resume if it is missing/corrupt.");
     }
     if (!validate_resume_meta(meta, err)) {
         return false;
@@ -1232,7 +1232,7 @@ bool Trainer::load_checkpoint(const std::string& path, std::string* err) {
     if (cfg_.max_steps > 0 && step >= cfg_.max_steps) {
         finished_ = true;
     }
-    std::printf("[trainer] checkpoint 已载入: %s（step=%lld epoch=%lld lr_g=%.3e rng=0x%016llx）\n",
+    std::printf("[trainer] checkpoint loaded: %s (step=%lld epoch=%lld lr_g=%.3e rng=0x%016llx)\n",
                 path.c_str(), (long long) step, (long long) epoch_, (double) lr_g(),
                 (unsigned long long) rng_.state);
     return true;
@@ -1248,12 +1248,12 @@ bool Trainer::verify_checkpoint_memory(const std::string& path, std::string* err
     items.optimizers      = parts;
     items.optimizer_count = 2;
     if (!traincpp::checkpoint_verify(path.c_str(), items)) {
-        return fail(err, "checkpoint_verify 失败: " + path);
+        return fail(err, "checkpoint_verify failed: " + path);
     }
     return true;
 }
 
-// ---------------------------------------------------------------- 访问器
+// ---------------------------------------------------------------- accessors
 
 int64_t Trainer::step_count() const {
     return ts_ ? traincpp::optim_step_count(ts_->optim_g()) : 0;

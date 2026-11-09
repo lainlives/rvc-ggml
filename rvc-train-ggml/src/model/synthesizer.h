@@ -1,18 +1,18 @@
-// RVC-Train-GGML - SynthesizerTrn 训练前向装配（src/model/synthesizer.h）
+// RVC-Train-GGML - SynthesizerTrn training forward assembly (src/model/synthesizer.h)
 //
-// 对应运行时 `infer_pack/models.py:739-762` 的 `SynthesizerTrnMs*.forward`（@torch.jit.ignore）：
-//   g = emb_g(sid)；m_p/logs_p = enc_p(phone,pitch,phone_lengths)；
-//   z/m_q/logs_q = enc_q(spec, y_lengths, g)；z_p = flow(z, y_mask, g)；
-//   rand_slice_segments(z, y_lengths, segment_size) → z_slice/ids_slice；
-//   pitchf_slice = slice_segments2(pitchf, ids_slice, segment_size)；
-//   o = dec(z_slice, pitchf_slice, g)。
-// 本模块仅负责**模型链条装配与前向**：切片选择矩阵、SineGen 激励源、attn_valid、Flip 置换矩阵
-// 均由调用方（selftest builder / 训练循环）在 buffer 分配后准备并作为输入/叶子传入。
+// Corresponds to runtime `infer_pack/models.py:739-762` `SynthesizerTrnMs*.forward` (@torch.jit.ignore):
+//   g = emb_g(sid); m_p/logs_p = enc_p(phone,pitch,phone_lengths);
+//   z/m_q/logs_q = enc_q(spec, y_lengths, g); z_p = flow(z, y_mask, g);
+//   rand_slice_segments(z, y_lengths, segment_size) -> z_slice/ids_slice;
+//   pitchf_slice = slice_segments2(pitchf, ids_slice, segment_size);
+//   o = dec(z_slice, pitchf_slice, g).
+// This module is only responsible for **model chain assembly and forward**: the slice selection matrix, SineGen excitation source, attn_valid, and Flip permutation matrix
+// are all prepared by the caller (selftest builder / training loop) after buffer allocation and passed in as inputs/leaves.
 //
-// 布局沿用各子模块：phone [Cin,T,B]、pitch [T,B]、x_mask/y_mask [T,1,B]、spec [spec,T,B]、
-// q_noise [Cq,T,B]、g [1,gin,B]、z/z_p [C,T,B]；切片选择一律用 `slice_mat [T,seg,B]`（0/1）
-// 经 `mul_mat` 表达（逐样本不同 ids 安全，且天然可反传；不切片模式直接喂整段 z/pitchf）。
-// 手工装配 POD（Q13），张量名保持 GGUF 原名。
+// Layout follows each submodule: phone [Cin,T,B], pitch [T,B], x_mask/y_mask [T,1,B], spec [spec,T,B],
+// q_noise [Cq,T,B], g [1,gin,B], z/z_p [C,T,B]; slice selection always uses `slice_mat [T,seg,B]` (0/1)
+// expressed via `mul_mat` (safe for per-sample different ids, and naturally differentiable; no-slice mode feeds the whole segment z/pitchf directly).
+// Manually assembled POD (Q13); tensor names keep their original GGUF names.
 #pragma once
 
 #include "model/dec.h"
@@ -34,9 +34,9 @@ struct SynthConfig {
     EncQConfig enc_q;
     FlowConfig flow;
     DecConfig  dec;
-    int64_t frames = 0;        // 谱帧数（T）
-    int64_t batch = 0;         // 批大小（B）
-    int64_t segment_size = 0;  // 训练切片帧数（z_frames，v1-40k = 32）
+    int64_t frames = 0;        // number of spectral frames (T)
+    int64_t batch = 0;         // batch size (B)
+    int64_t segment_size = 0;  // training slice frames (z_frames, v1-40k = 32)
 };
 
 struct SynthModules {
@@ -47,14 +47,14 @@ struct SynthModules {
     DecModule  dec;
 };
 
-// 按名装配四个子模块（内部各自手工 POD）；失败返回 false 并写 err。
+// Assemble the four submodules by name (each manually POD inside); returns false and writes err on failure.
 bool synth_load(const ModelParams& params, const SynthConfig& cfg, SynthModules* out,
                 std::string* err);
 
-// 前向输入（均为建图期已存在的张量/叶子）：
-//   sid [B] I32；phone/pitch/x_mask/attn_valid（enc_p）；spec/y_mask/q_noise（enc_q）；
-//   flip_perm [C,C]（flow）；slice_mat [T,seg,B]（0/1）；sine_source_full [1,T*upp,B]；
-//   sine_source_slice [1,seg*upp,B]（主机 SineGen 在 prepare 中填充）
+// Forward inputs (all tensors/leaves that already exist at graph build time):
+//   sid [B] I32; phone/pitch/x_mask/attn_valid (enc_p); spec/y_mask/q_noise (enc_q);
+//   flip_perm [C,C] (flow); slice_mat [T,seg,B] (0/1); sine_source_full [1,T*upp,B];
+//   sine_source_slice [1,seg*upp,B] (filled by host SineGen in prepare)
 struct SynthInputs {
     traincpp::Tensor* sid = nullptr;
     traincpp::Tensor* phone = nullptr;
@@ -68,8 +68,8 @@ struct SynthInputs {
     traincpp::Tensor* slice_mat = nullptr;
     traincpp::Tensor* sine_source_full = nullptr;
     traincpp::Tensor* sine_source_slice = nullptr;
-    // true（默认）= 同时构建整段 dec 路径（M2-8 前向对拍用）；
-    // false = 仅切片路径（训练循环/M3-3：官方训练只用切片 y_hat，省一半显存）
+    // true (default) = also build the whole-segment dec path (for M2-8 forward comparison);
+    // false = slice path only (training loop/M3-3: official training only uses the slice y_hat, saving half the VRAM)
     bool include_full = true;
 };
 
@@ -81,9 +81,9 @@ struct SynthOutputs {
     traincpp::Tensor* m_q = nullptr;
     traincpp::Tensor* logs_q = nullptr;
     traincpp::Tensor* z_p = nullptr;
-    traincpp::Tensor* z_slice = nullptr;   // [C,seg,B]（mul_mat(slice_mat,z)）
-    traincpp::Tensor* o_full = nullptr;    // 不切片：dec(z, pitchf) [T*upp,1,B]
-    traincpp::Tensor* o_slice = nullptr;   // 切片：dec(z_slice, pitchf_slice) [seg*upp,1,B]
+    traincpp::Tensor* z_slice = nullptr;   // [C,seg,B] (mul_mat(slice_mat,z))
+    traincpp::Tensor* o_full = nullptr;    // no-slice: dec(z, pitchf) [T*upp,1,B]
+    traincpp::Tensor* o_slice = nullptr;   // slice: dec(z_slice, pitchf_slice) [seg*upp,1,B]
 
     EncPCaptures enc_p_caps;
     EncQCaptures enc_q_caps;
@@ -92,8 +92,8 @@ struct SynthOutputs {
     DecCaptures  dec_slice_caps;
 };
 
-// 整模型训练前向（含不切片与固定切片两条 dec 路径）。
-// 失败返回空（全部字段为 nullptr）。
+// Whole-model training forward (includes both the no-slice and fixed-slice dec paths).
+// Returns empty on failure (all fields nullptr).
 SynthOutputs synth_forward(traincpp::Context* ctx, const ModelParams& params,
                            const SynthModules& m, const SynthInputs& in);
 

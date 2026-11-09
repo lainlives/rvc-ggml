@@ -1,6 +1,6 @@
 // rmvpe.cpp
-// RMVPE 图实现：mel 前端（GGUF 内 buffer_mel_basis）+ DeepUnet 特征 +
-// 双向 GRU（512 帧分块、状态接力）+ 360 类显著性头 + cents 解码。
+// RMVPE graph implementation: mel front end (buffer_mel_basis in GGUF) + DeepUnet features +
+// bidirectional GRU (512-frame chunking, state handoff) + 360-class salience head + cents decoding.
 
 #include "rmvpe/rmvpe.h"
 
@@ -29,24 +29,24 @@ constexpr int64_t kFeatureDim = 384;
 constexpr int64_t kHiddenDim = 256;
 constexpr int64_t kClasses = 360;
 
-// 特征网络窗口（对齐参考实现 0xShug0/audio.cpp）
+// Feature network window (aligned with reference implementation 0xShug0/audio.cpp)
 constexpr int64_t kFeatureActiveFrames = 4096;
 constexpr int64_t kFeatureOverlapFrames = 2048;
 constexpr int64_t kFeatureGraphFrames = kFeatureActiveFrames + 2 * kFeatureOverlapFrames;
-// 单窗上限：≤ 该帧数时整段一次推理（严格对齐 Python 的全量 mel 推理）；
-// 超过则退回带上下文的窗口推理（边界帧与 Python 有微小差异，见技术文档二）
-// 上限推导（Vulkan）：flat 卷积首层 OC=16 ≤ 32 → 小 tile，wg_denoms={32,32,1}，
-// matmul 的 N = 128 × 帧数，且 ggml-vulkan 不对 N 维切分，须满足
+// Single-window limit: at or below this frame count, run whole-segment inference in one shot (strictly matching Python's full-mel inference);
+// above it, fall back to windowed inference with context (boundary frames differ slightly from Python; see technical_02_ggml_vulkan_details.md)
+// Limit derivation (Vulkan): flat conv first layer OC=16 ≤ 32 -> small tile, wg_denoms={32,32,1},
+// matmul N = 128 × frames, and ggml-vulkan does not split the N dimension, so it must satisfy
 //   128 × T / 32 ≤ maxComputeWorkGroupCount[1] = 65535
-// 帧数按 32 对齐：16352×4=65408 安全，16384×4=65536 超限 → 取 16352（约 163.5s 音频）
+// Frames aligned to 32: 16352×4=65408 is safe, 16384×4=65536 exceeds the limit -> use 16352 (about 163.5s of audio)
 constexpr int64_t kFeatureSingleShotLimit = 16352;
 
-// GRU 分块长度（图按 512 帧静态展开，块间状态接力）
+// GRU chunk length (graphs statically unrolled over 512 frames, with state handoff between chunks)
 constexpr int64_t kGruChunkFrames = 512;
 
 constexpr float kBatchNormEps = 1e-5f;
 
-// 解码常数（20 * arange(360) + 1997.3794084376191）
+// Decoding constants (20 * arange(360) + 1997.3794084376191)
 constexpr float kCentsStep = 20.0f;
 constexpr float kCentsBase = 1997.3794084376191f;
 
@@ -55,12 +55,12 @@ const bool kDebug = getenv("RVC_RMVPE_DEBUG") != nullptr;
 ggml_tensor* require(const GgufModel& model, const std::string& name) {
     ggml_tensor* t = model.weight(name);
     if (!t) {
-        throw std::runtime_error("RMVPE 缺少张量: " + name);
+        throw std::runtime_error("RMVPE is missing tensor: " + name);
     }
     return t;
 }
 
-// [C] -> [1,1,C,1]：conv2d 输出通道维广播（ne[2]）
+// [C] -> [1,1,C,1]: conv2d output channel-dim broadcast (ne[2])
 ggml_tensor* channel4(ggml_context* ctx, ggml_tensor* t) {
     return ggml_reshape_4d(ctx, to_f32(ctx, t), 1, 1, t->ne[0], 1);
 }
@@ -83,8 +83,8 @@ ggml_tensor* div_checked(ggml_context* ctx, ggml_tensor* a, ggml_tensor* b) {
     return ggml_div(ctx, a, b);
 }
 
-// BatchNorm2d（eval）：y = (x - mean) / sqrt(var + eps) * w + b
-// x: [W, H, C, N]；参数 [C] 广播到通道维 ne[2]
+// BatchNorm2d (eval): y = (x - mean) / sqrt(var + eps) * w + b
+// x: [W, H, C, N]; parameters [C] broadcast to the channel dim ne[2]
 ggml_tensor* batch_norm2d(ggml_context* ctx, ggml_tensor* x,
     const GgufModel& model, const std::string& prefix) {
     ggml_tensor* w = channel4(ctx, require(model, prefix + ".weight"));
@@ -96,16 +96,16 @@ ggml_tensor* batch_norm2d(ggml_context* ctx, ggml_tensor* x,
     return add_checked(ctx, mul_checked(ctx, norm, w), b);
 }
 
-// Conv2d：x [W,H,IC,N]，w [KW,KH,IC,OC]，pad 为四边 padding
-// flat=true 时 w 为展平布局 [IC*KH*KW, OC]（GGUF rvc.conv_flat）：
-//   im2col(F32/F16) + mul_mat(量化权重作 src0)，支持量化卷积权重
+// Conv2d: x [W,H,IC,N], w [KW,KH,IC,OC], pad is padding on all four sides
+// when flat=true, w uses a flattened layout [IC*KH*KW, OC] (GGUF rvc.conv_flat):
+//   im2col(F32/F16) + mul_mat(quantized weights as src0), supporting quantized conv weights
 ggml_tensor* conv2d_flat_impl(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w,
     ggml_tensor* b, int pad, int stride, int64_t kh, int64_t kw) {
     const int64_t IC = x->ne[2];
     if (w->ne[2] != 1 || w->ne[3] != 1 || w->ne[0] != IC * kh * kw) {
         char buf[256];
         snprintf(buf, sizeof(buf),
-            "conv2d(flat): 权重/输入不匹配（w=[%lld,%lld,%lld,%lld] in=[%lld,%lld,%lld,%lld] k=%lldx%lld）",
+            "conv2d(flat): weight/input mismatch (w=[%lld,%lld,%lld,%lld] in=[%lld,%lld,%lld,%lld] k=%lldx%lld)",
             static_cast<long long>(w->ne[0]), static_cast<long long>(w->ne[1]),
             static_cast<long long>(w->ne[2]), static_cast<long long>(w->ne[3]),
             static_cast<long long>(x->ne[0]), static_cast<long long>(x->ne[1]),
@@ -115,7 +115,7 @@ ggml_tensor* conv2d_flat_impl(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w,
     }
     const int64_t OC = w->ne[1];
 
-    // im2col 只读取 kernel 形状（不读数据）
+    // im2col only reads the kernel shape (not its data)
     ggml_tensor* kernel = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, kw, kh, IC, 1);
     ggml_set_name(kernel, "conv2d_flat_kernel");
     ggml_set_input(kernel);
@@ -130,7 +130,7 @@ ggml_tensor* conv2d_flat_impl(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w,
 
     ggml_tensor* y = ggml_mul_mat(ctx, w, cols2);        // [OC, OW*OH*N]
     y = ggml_reshape_4d(ctx, y, OC, OW, OH, N);
-    // ggml_permute 参数 = 源维 i 放到目标轴 axis_i：src0(OC)->2, src1(OW)->0, src2(OH)->1
+    // ggml_permute args = source dim i mapped to target axis axis_i: src0(OC)->2, src1(OW)->0, src2(OH)->1
     y = rvc::vits::permute_cont(ctx, y, 2, 0, 1, 3);     // [OW, OH, OC, N]
     if (b) {
         y = add_checked(ctx, y, channel4(ctx, b));
@@ -167,7 +167,7 @@ ggml_tensor* conv_bn_relu(ggml_context* ctx, ggml_tensor* x,
     return ggml_relu(ctx, y);
 }
 
-// ConvBlockRes：conv.0/1 + conv.3/4（3x3，pad1）+ shortcut（1x1，仅通道变化时）
+// ConvBlockRes: conv.0/1 + conv.3/4 (3x3, pad1) + shortcut (1x1, only when channels change)
 ggml_tensor* conv_block_res(ggml_context* ctx, ggml_tensor* x,
     const GgufModel& model, const std::string& prefix, bool flat) {
     const int64_t in_c = x->ne[2];
@@ -185,13 +185,13 @@ ggml_tensor* conv_block_res(ggml_context* ctx, ggml_tensor* x,
     return y;
 }
 
-// AvgPool2d(2)：非重叠 2x2 平均
+// AvgPool2d(2): non-overlapping 2x2 average
 ggml_tensor* avg_pool2d_2x2(ggml_context* ctx, ggml_tensor* x) {
     return ggml_pool_2d(ctx, x, GGML_OP_POOL_AVG, 2, 2, 2, 2, 0.0f, 0.0f);
 }
 
-// ConvTranspose2d(k=3, s=2, p=1, output_padding=1)：等价 2 倍上采样。
-// ggml 无 padding 版本输出 (2*in+1)，PyTorch 输出为 full[1 : 1+2*in]（pad=1 + op=1）。
+// ConvTranspose2d(k=3, s=2, p=1, output_padding=1): equivalent to 2x upsampling.
+// ggml's no-padding version outputs (2*in+1); PyTorch outputs full[1 : 1+2*in] (pad=1 + op=1).
 ggml_tensor* conv_transpose2x(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w) {
     const int64_t W = x->ne[0];
     const int64_t H = x->ne[1];
@@ -206,13 +206,13 @@ ggml_tensor* conv_transpose2x(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w)
 }
 
 // ------------------------------------------------------------------
-// 子图构建
+// Subgraph construction
 // ------------------------------------------------------------------
 
-// DeepUnet + cnn：输入 [frames, 128]（mel 行主序），输出 [384, frames]
+// DeepUnet + cnn: input [frames, 128] (mel row-major), output [384, frames]
 ggml_tensor* build_feature_graph(ggml_context* ctx, ggml_tensor* input,
     const GgufModel& model, ggml_tensor** out, bool flat) {
-    // [frames,128] -> [128,frames] -> [1,1,frames,128]（行主序 = PyTorch [1,1,T,128]）
+    // [frames,128] -> [128,frames] -> [1,1,frames,128] (row-major = PyTorch [1,1,T,128])
     ggml_tensor* x = ggml_cont(ctx, ggml_transpose(ctx, to_f32(ctx, input)));
     const int64_t frames = x->ne[1];
     x = ggml_reshape_4d(ctx, x, kMelBins, frames, 1, 1);
@@ -252,14 +252,14 @@ ggml_tensor* build_feature_graph(ggml_context* ctx, ggml_tensor* input,
     }
 
     x = conv2d(ctx, x, require(model, "cnn.weight"), require(model, "cnn.bias"), 1, 1, 3, 3, flat);  // [128,frames,3,1]
-    // [128,3,frames] -> [384,frames]：(c,m) 展平，m 最快（对齐 PyTorch flatten(-2)）
+    // [128,3,frames] -> [384,frames]: flatten (c,m) with m fastest (aligned with PyTorch flatten(-2))
     x = ggml_cont(ctx, ggml_permute(ctx, x, 0, 2, 1, 3));
     *out = ggml_reshape_2d(ctx, x, kFeatureDim, frames);
     return *out;
 }
 
-// BiGRU 单向（512 帧展开）：输入 [384,512]，keep [512]，hidden [256,1]
-// 输出 sequence [256,512] 与 final_hidden [256,1]
+// BiGRU single direction (512-frame unroll): input [384,512], keep [512], hidden [256,1]
+// Output sequence [256,512] and final_hidden [256,1]
 void build_gru_graph(ggml_context* ctx, ggml_tensor* input, ggml_tensor* keep,
     ggml_tensor* hidden, const GgufModel& model, bool reverse,
     ggml_tensor** sequence_out, ggml_tensor** final_out) {
@@ -273,7 +273,7 @@ void build_gru_graph(ggml_context* ctx, ggml_tensor* input, ggml_tensor* keep,
 
     ggml_tensor* x_proj = linear(ctx, input, w_ih, b_ih);   // [768, frames]
 
-    // 每个门切片：从 [768,1] 上取 [off, off+256)
+    // Slice per gate: take [off, off+256) from [768,1]
     auto gate = [&](ggml_tensor* src, int64_t off) {
         return ggml_cont(ctx, ggml_view_2d(ctx, src, kHiddenDim, 1, src->nb[1],
             static_cast<size_t>(off) * src->nb[0]));
@@ -309,7 +309,7 @@ void build_gru_graph(ggml_context* ctx, ggml_tensor* input, ggml_tensor* keep,
     *final_out = h;
 }
 
-// head：forward/reverse [256,512] -> concat [512,512] -> Linear(360) -> Sigmoid
+// head: forward/reverse [256,512] -> concat [512,512] -> Linear(360) -> Sigmoid
 ggml_tensor* build_head_graph(ggml_context* ctx, ggml_tensor* forward, ggml_tensor* reverse,
     const GgufModel& model) {
     ggml_tensor* cat = ggml_concat(ctx, forward, reverse, 0);   // [512,512]
@@ -318,10 +318,10 @@ ggml_tensor* build_head_graph(ggml_context* ctx, ggml_tensor* forward, ggml_tens
 }
 
 // ------------------------------------------------------------------
-// 主机侧数据搬运
+// Host-side data movement
 // ------------------------------------------------------------------
 
-// 把 padded mel 的第 [start, start+frames) 帧拷进窗口（mel 行主序，窗口大小 graph_frames）
+// Copy padded mel frames [start, start+frames) into the window (mel row-major; window size graph_frames)
 void copy_mel_window(const std::vector<float>& mel, int64_t mel_frames, int64_t graph_frames,
     int64_t start, int64_t frames, std::vector<float>& out) {
     out.assign(static_cast<size_t>(kMelBins * graph_frames), 0.0f);
@@ -331,7 +331,7 @@ void copy_mel_window(const std::vector<float>& mel, int64_t mel_frames, int64_t 
     }
 }
 
-// 特征行拷贝：source [rows,384] 第 source_start 行 -> destination 第 dst_start 行
+// Feature row copy: source [rows,384] row source_start -> destination row dst_start
 void copy_feature_rows(const std::vector<float>& source, int64_t source_start, int64_t rows,
     std::vector<float>& destination, int64_t destination_start) {
     for (int64_t row = 0; row < rows; ++row) {
@@ -353,7 +353,7 @@ void fill_gru_chunk(const std::vector<float>& features, int64_t start, int64_t f
     }
 }
 
-// 显著性 [frames,360] -> f0（对齐 Python to_local_average_cents + decode）
+// Salience [frames,360] -> f0 (aligned with Python to_local_average_cents + decode)
 std::vector<float> decode_salience(const std::vector<float>& salience, int64_t frames,
     float threshold) {
     std::vector<float> f0(static_cast<size_t>(frames), 0.0f);
@@ -401,13 +401,13 @@ struct RmvpeExtractor::Impl {
     Config cfg;
     std::vector<float> mel_basis;
 
-    // feature 图（尺寸随输入变化，懒重建）
+    // feature graph (size varies with input; rebuilt lazily)
     std::unique_ptr<GgmlGraphRunner> feature;
     ggml_tensor* feature_in = nullptr;
     ggml_tensor* feature_out = nullptr;
     int64_t feature_frames = 0;
 
-    // GRU 图（固定 512 帧）
+    // GRU graphs (fixed 512 frames)
     std::unique_ptr<GgmlGraphRunner> fwd;
     ggml_tensor* fwd_in = nullptr;
     ggml_tensor* fwd_keep = nullptr;
@@ -422,7 +422,7 @@ struct RmvpeExtractor::Impl {
     ggml_tensor* rev_sequence = nullptr;
     ggml_tensor* rev_final = nullptr;
 
-    // head 图（固定 512 帧）
+    // head graph (fixed 512 frames)
     std::unique_ptr<GgmlGraphRunner> head;
     ggml_tensor* head_fwd = nullptr;
     ggml_tensor* head_rev = nullptr;
@@ -437,7 +437,7 @@ struct RmvpeExtractor::Impl {
 
     void ensure_feature_graph(int64_t frames) {
         if (frames <= 0 || frames % 32 != 0) {
-            throw std::runtime_error("RMVPE feature 图要求 32 对齐的正帧数");
+            throw std::runtime_error("RMVPE feature graph requires a positive frame count aligned to 32");
         }
         if (feature && feature_frames == frames) {
             return;
@@ -454,11 +454,11 @@ struct RmvpeExtractor::Impl {
         feature->expand(feature_out);
         if (!feature->allocate()) {
             release_feature();
-            throw std::runtime_error("RMVPE feature 图缓冲分配失败");
+            throw std::runtime_error("RMVPE feature graph buffer allocation failed");
         }
         feature_frames = frames;
         if (kDebug) {
-            fprintf(stderr, "[rmvpe] feature 图: frames=%lld 节点=%d 缓冲=%zu MiB\n",
+            fprintf(stderr, "[rmvpe] feature graph: frames=%lld nodes=%d buffer=%zu MiB\n",
                 (long long)frames, feature->node_count(),
                 feature->buffer_size() / (1024 * 1024));
         }
@@ -482,7 +482,7 @@ struct RmvpeExtractor::Impl {
         fwd->expand(fwd_sequence);
         fwd->expand(fwd_final);
         if (!fwd->allocate()) {
-            throw std::runtime_error("RMVPE forward GRU 图缓冲分配失败");
+            throw std::runtime_error("RMVPE forward GRU graph buffer allocation failed");
         }
 
         rev = std::make_unique<GgmlGraphRunner>(backend, 128ull * 1024 * 1024, 32768);
@@ -502,7 +502,7 @@ struct RmvpeExtractor::Impl {
         rev->expand(rev_sequence);
         rev->expand(rev_final);
         if (!rev->allocate()) {
-            throw std::runtime_error("RMVPE reverse GRU 图缓冲分配失败");
+            throw std::runtime_error("RMVPE reverse GRU graph buffer allocation failed");
         }
 
         head = std::make_unique<GgmlGraphRunner>(backend, 64ull * 1024 * 1024, 8192);
@@ -517,11 +517,11 @@ struct RmvpeExtractor::Impl {
         ggml_set_output(head_out);
         head->expand(head_out);
         if (!head->allocate()) {
-            throw std::runtime_error("RMVPE head 图缓冲分配失败");
+            throw std::runtime_error("RMVPE head graph buffer allocation failed");
         }
 
         if (kDebug) {
-            fprintf(stderr, "[rmvpe] gru/head 图: fwd=%d rev=%d head=%d 节点\n",
+            fprintf(stderr, "[rmvpe] gru/head graph: fwd=%d rev=%d head=%d nodes\n",
                 fwd->node_count(), rev->node_count(), head->node_count());
         }
     }
@@ -536,7 +536,7 @@ RmvpeExtractor::RmvpeExtractor(const GgufModel& model, ggml_backend_t backend)
     impl_->mel_basis = model.read_f32("buffer_mel_basis");
     const size_t want = static_cast<size_t>(impl_->cfg.n_mels) * (impl_->cfg.n_fft / 2 + 1);
     if (impl_->mel_basis.size() != want) {
-        throw std::runtime_error("RMVPE mel 滤波器组尺寸不匹配: " +
+        throw std::runtime_error("RMVPE mel filter bank size mismatch: " +
             std::to_string(impl_->mel_basis.size()) + " != " + std::to_string(want));
     }
 
@@ -577,7 +577,7 @@ std::vector<float> RmvpeExtractor::compute_mel(const std::vector<float>& audio_1
 
 Result RmvpeExtractor::infer(const std::vector<float>& audio_16k, float threshold) {
     if (audio_16k.empty()) {
-        throw std::runtime_error("RMVPE 输入音频为空");
+        throw std::runtime_error("RMVPE input audio is empty");
     }
     const Config& cfg = impl_->cfg;
 
@@ -587,14 +587,14 @@ Result RmvpeExtractor::infer(const std::vector<float>& audio_16k, float threshol
     const int64_t padded = 32 * ((frames - 1) / 32 + 1);
     result.padded_frames = padded;
 
-    // mel 时间轴 pad 到 32 对齐（零填充，对齐 Python F.pad）
+    // Pad the mel time axis to a multiple of 32 (zero padding, aligned with Python F.pad)
     std::vector<float> mel_padded(static_cast<size_t>(kMelBins * padded), 0.0f);
     for (int64_t m = 0; m < kMelBins; ++m) {
         std::copy_n(result.mel.begin() + static_cast<std::ptrdiff_t>(m * frames),
             frames, mel_padded.begin() + static_cast<std::ptrdiff_t>(m * padded));
     }
 
-    // ---- feature（DeepUnet）：优先整段单窗；超长退回窗口推理 ----
+    // ---- feature (DeepUnet): prefer a single whole-segment window; fall back to windowed inference when too long ----
     const bool single_shot = padded <= kFeatureSingleShotLimit;
     const int64_t step = single_shot ? padded : kFeatureActiveFrames;
     const int64_t graph_frames = single_shot ? padded : kFeatureGraphFrames;
@@ -619,7 +619,7 @@ Result RmvpeExtractor::infer(const std::vector<float>& audio_16k, float threshol
         copy_feature_rows(feature_out, active_offset, active_frames, features, active_start);
     }
 
-    // ---- forward GRU（512 帧分块，状态接力）----
+    // ---- forward GRU (512-frame chunking, state handoff) ----
     std::vector<float> forward_states(static_cast<size_t>(padded * kHiddenDim), 0.0f);
     std::vector<float> hidden(static_cast<size_t>(kHiddenDim), 0.0f);
     std::vector<float> chunk;

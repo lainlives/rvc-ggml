@@ -1,4 +1,4 @@
-// RVC-Train-GGML - GeneratorNSF 实现（src/model/dec.cpp）
+// RVC-Train-GGML - GeneratorNSF implementation (src/model/dec.cpp)
 #include "model/dec.h"
 
 #include <cstdio>
@@ -11,13 +11,13 @@ namespace {
 
 using namespace traincpp;
 
-constexpr float kLeakySlope = 0.1f;        // 级内 LeakyReLU 斜率（GeneratorNSF.lrelu_slope）
-constexpr float kLeakySlopeFinal = 0.01f;  // 末级 F.leaky_relu 默认斜率
+constexpr float kLeakySlope = 0.1f;        // per-stage LeakyReLU slope (GeneratorNSF.lrelu_slope)
+constexpr float kLeakySlopeFinal = 0.01f;  // final-stage F.leaky_relu default slope
 
 Tensor* require_param(const ModelParams& params, const std::string& name, std::string* err) {
     Tensor* t = params.find(name.c_str());
     if (t == nullptr && err != nullptr) {
-        *err = "缺失参数: " + name;
+        *err = "missing parameter: " + name;
     }
     return t;
 }
@@ -37,7 +37,7 @@ void wire_conv1d(Conv1d* layer, Tensor* weight, Tensor* bias, int64_t stride, in
     std::snprintf(layer->name, MAX_NAME, "%s", name);
 }
 
-// ∏ rates[from..]（from >= size 时为 1）
+// ∏ rates[from..] (1 when from >= size)
 int64_t prod_rates(const std::vector<int64_t>& rates, size_t from) {
     int64_t p = 1;
     for (size_t i = from; i < rates.size(); ++i) {
@@ -51,7 +51,7 @@ int64_t prod_rates(const std::vector<int64_t>& rates, size_t from) {
 bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "dec 输出为空";
+            *err = "dec output is null";
         }
         return false;
     }
@@ -60,7 +60,7 @@ bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, s
         cfg.resblock_kernel_sizes.empty() ||
         cfg.resblock_dilation_sizes.size() != cfg.resblock_kernel_sizes.size() * 3) {
         if (err != nullptr) {
-            *err = "dec 配置非法（in_channels/up_init > 0；rates/kernels 等长；resblock 每 kernel 3 个 dilation）";
+            *err = "invalid dec config (in_channels/up_init > 0; rates/kernels equal length; resblock 3 dilations per kernel)";
         }
         return false;
     }
@@ -68,7 +68,7 @@ bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, s
     DecModule m;
     m.cfg = cfg;
 
-    // z 激励源线性层（1→1）
+    // z excitation-source linear layer (1->1)
     Tensor* lw = require_param(params, cfg.prefix + ".m_source.l_linear.weight", err);
     if (lw == nullptr) {
         return false;
@@ -100,7 +100,7 @@ bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, s
     }
     wire_conv1d(&m.conv_post, w, nullptr, 1, (w->ne[0] - 1) / 2, 1, "conv_post");
 
-    // 上采样级与噪声卷积
+    // Upsample stages and noise convolutions
     const size_t n_up = cfg.upsample_rates.size();
     m.ups.resize(n_up);
     m.ups_wn.resize(n_up);
@@ -131,9 +131,9 @@ bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, s
         std::snprintf(up.name, MAX_NAME, "%s", "dec.ups");
         if (up.kernel_size != cfg.upsample_kernel_sizes[i]) {
             if (err != nullptr) {
-                *err = "dec.ups." + std::to_string(i) + " 核大小与配置不符（权重 " +
-                       std::to_string(up.kernel_size) + " vs 配置 " +
-                       std::to_string(cfg.upsample_kernel_sizes[i]) + "）";
+                *err = "dec.ups." + std::to_string(i) + " kernel size does not match config (weight " +
+                       std::to_string(up.kernel_size) + " vs config " +
+                       std::to_string(cfg.upsample_kernel_sizes[i]) + ")";
             }
             return false;
         }
@@ -149,7 +149,7 @@ bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, s
                     n_padding, 1, "noise_conv");
     }
 
-    // ResBlock1：每级 num_kernels 个（解复用 M2-2 已验收实现）
+    // ResBlock1: num_kernels per stage (reuses the accepted M2-2 implementation)
     const int64_t num_kernels = static_cast<int64_t>(cfg.resblock_kernel_sizes.size());
     m.num_kernels = num_kernels;
     m.resblocks.reserve(n_up * static_cast<size_t>(num_kernels));
@@ -178,26 +178,26 @@ bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, s
 Tensor* dec_forward(Context* ctx, const DecModule& dec, Tensor* z, Tensor* sine_source, Tensor* g,
                     DecCaptures* caps) {
     if (ctx == nullptr || z == nullptr || sine_source == nullptr) {
-        std::printf("[dec] 输入为空\n");
+        std::printf("[dec] null input\n");
         return nullptr;
     }
     if (z->ne[1] != dec.cfg.in_channels) {
-        std::printf("[dec] z 通道 %lld != in_channels %lld\n", (long long) z->ne[1],
+        std::printf("[dec] z channels %lld != in_channels %lld\n", (long long) z->ne[1],
                     (long long) dec.cfg.in_channels);
         return nullptr;
     }
     const int64_t frames = z->ne[0];
     const int64_t batch  = z->ne[2];
     const int64_t total  = frames * prod_rates(dec.cfg.upsample_rates, 0);
-    // sine_source 布局约定：[1, L, B]（等价 torch [B,L,1]，L = T·∏rates）
+    // sine_source layout convention: [1, L, B] (equivalent to torch [B,L,1], L = T·∏rates)
     if (sine_source->ne[0] != 1 || sine_source->ne[1] != total || sine_source->ne[2] != batch) {
-        std::printf("[dec] sine_source 形状 [%lld,%lld,%lld] != [1,%lld,%lld]\n",
+        std::printf("[dec] sine_source shape [%lld,%lld,%lld] != [1,%lld,%lld]\n",
                     (long long) sine_source->ne[0], (long long) sine_source->ne[1],
                     (long long) sine_source->ne[2], (long long) total, (long long) batch);
         return nullptr;
     }
 
-    // 激励源：l_linear(1→1) + tanh（作用在最后一维，与 torch 一致；[L,1,B]→[1,L·B]→[L,1,B]）
+    // Excitation source: l_linear(1->1) + tanh (applied to the last dim, consistent with torch; [L,1,B]->[1,L·B]->[L,1,B])
     Tensor* src = cont(ctx, sine_source);
     Tensor* merged = reshape_2d(ctx, src, 1, total * batch);
     if (merged == nullptr) {

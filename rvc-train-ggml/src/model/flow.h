@@ -1,13 +1,13 @@
-// RVC-Train-GGML - ResidualCouplingBlock flow（src/model/flow.h）
+// RVC-Train-GGML - ResidualCouplingBlock flow (src/model/flow.h)
 //
-// 对应运行时 `infer_pack/models.py:82-147` 的 `ResidualCouplingBlock`（训练**正向**）：
-//   flows 顺序 [RCL, Flip, RCL, Flip, RCL, Flip, RCL, Flip]；
-//   RCL（`modules.py:477-537`，mean_only=True）：
-//     x0,x1 = 对半切；h = pre(x0)·mask → WN(h,mask,g) → stats = post(h)·mask；
-//     正向：x1 = stats + x1·mask；x = cat([x0,x1])；
-//   Flip（`modules.py:440-457`）：沿通道维翻转（本实现用 C×C 置换矩阵 mul_mat，
-//   与 RVC-GGML 推理同法；矩阵在 buffer 分配后由 `flow_fill_flip_perm` 填充）。
-// 权重为训练态 GGUF（WN 的 weight_g/weight_v 不折叠；张量名保持原名）。
+// Corresponds to runtime `infer_pack/models.py:82-147` `ResidualCouplingBlock` (training **forward**):
+//   flow order [RCL, Flip, RCL, Flip, RCL, Flip, RCL, Flip];
+//   RCL (`modules.py:477-537`, mean_only=True):
+//     x0,x1 = split in half; h = pre(x0)·mask -> WN(h,mask,g) -> stats = post(h)·mask;
+//     forward: x1 = stats + x1·mask; x = cat([x0,x1]);
+//   Flip (`modules.py:440-457`): flip along the channel dim (this implementation uses a C×C permutation matrix mul_mat,
+//   same as RVC-GGML inference; the matrix is filled by `flow_fill_flip_perm` after buffer allocation).
+// Weights are training-state GGUF (WN weight_g/weight_v not folded; tensor names kept as-is).
 #pragma once
 
 #include "model/model.h"
@@ -23,8 +23,8 @@ namespace rvc_train {
 namespace model {
 
 struct FlowConfig {
-    std::string prefix = "flow";    // 参数名前缀（torch 键名）
-    int64_t channels = 0;           // 192（必须为偶数）
+    std::string prefix = "flow";    // parameter name prefix (torch key name)
+    int64_t channels = 0;           // 192 (must be even)
     int64_t hidden_channels = 0;    // 192
     int64_t kernel_size = 5;
     int64_t dilation_rate = 1;
@@ -33,32 +33,32 @@ struct FlowConfig {
     int64_t n_flows = 4;
 };
 
-// 单个 ResidualCouplingLayer（weights 位于 flow.flows.{2i}.*）
+// Single ResidualCouplingLayer (weights at flow.flows.{2i}.*)
 struct FlowLayer {
-    traincpp::Conv1d pre;           // 1×1: half → hidden
+    traincpp::Conv1d pre;           // 1×1: half -> hidden
     WnModule enc;                   // WN
-    traincpp::Conv1d post;          // 1×1: hidden → half（mean_only）
+    traincpp::Conv1d post;          // 1×1: hidden -> half (mean_only)
 };
 
 struct FlowModule {
     FlowConfig cfg;
-    std::vector<FlowLayer> layers;  // n_flows 个
+    std::vector<FlowLayer> layers;  // n_flows entries
 };
 
 bool flow_load(const ModelParams& params, const FlowConfig& cfg, FlowModule* out, std::string* err);
 
-// Flip 置换矩阵 [C,C]（ne=[C,C]）：y = mul_mat(P, x) 得到通道翻转。
-// 需在 buffer 分配后调用（selftest 走 `SelftestBuildIO::prepare`；训练循环在分配后调用一次）。
+// Flip permutation matrix [C,C] (ne=[C,C]): y = mul_mat(P, x) gives the channel flip.
+// Must be called after buffer allocation (selftest goes through `SelftestBuildIO::prepare`; the training loop calls it once after allocation).
 bool flow_fill_flip_perm(traincpp::Tensor* perm, std::string* err = nullptr);
 
-// 前向捕获（对拍用；不需要时传 nullptr）
+// Forward captures (for comparison; pass nullptr if not needed)
 struct FlowCaptures {
-    std::vector<traincpp::Tensor*> pre;     // 每层 pre 卷积输出（乘 mask 前）
-    std::vector<traincpp::Tensor*> enc;     // 每层 WN 输出
-    std::vector<traincpp::Tensor*> stats;   // 每层 post 卷积输出（乘 mask 前）
+    std::vector<traincpp::Tensor*> pre;     // pre convolution output of each layer (before mask multiply)
+    std::vector<traincpp::Tensor*> enc;     // WN output of each layer
+    std::vector<traincpp::Tensor*> stats;   // post convolution output of each layer (before mask multiply)
 };
 
-// x=[T,C,B]，x_mask=[T,1,B]，g=[1,gin,B]，perm=[C,C]（已填充）；输出 y=[T,C,B]
+// x=[T,C,B], x_mask=[T,1,B], g=[1,gin,B], perm=[C,C] (already filled); output y=[T,C,B]
 traincpp::Tensor* flow_forward(traincpp::Context* ctx, const FlowModule& flow, traincpp::Tensor* x,
                                traincpp::Tensor* x_mask, traincpp::Tensor* g, traincpp::Tensor* perm,
                                FlowCaptures* caps = nullptr);

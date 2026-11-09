@@ -1,5 +1,5 @@
 // utils.cpp
-// 工具函数实现
+// Utility function implementations
 
 #include "utils.h"
 #include <algorithm>

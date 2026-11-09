@@ -1,7 +1,7 @@
 # RVC-Train-GGML dev build script (Windows / PowerShell 5.1+)
 #
 # NOTE: keep this file ASCII-only. PowerShell 5.1 mis-parses UTF-8 files without BOM;
-#       Chinese documentation lives in docs/ instead.
+#       documentation lives in docs/ instead.
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts\dev_build.ps1              # configure + build

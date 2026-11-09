@@ -1,5 +1,5 @@
 // retrieval.cpp
-// FAISS IndexIVFFlat 检索的 C++ 实现（nprobe=1）。
+// C++ implementation of FAISS IndexIVFFlat retrieval (nprobe=1).
 
 #include "rvc/retrieval.h"
 
@@ -34,7 +34,7 @@ void RetrievalIndex::load(const std::string& path, ggml_backend_t backend) {
     ntotal_ = model.meta_u32("index.ntotal", 0);
     nprobe_ = model.meta_u32("index.nprobe", 1);
     if (dim_ <= 0 || nlist_ <= 0) {
-        throw std::runtime_error("检索索引元数据缺失（dim/nlist）");
+        throw std::runtime_error("Retrieval index metadata is missing (dim/nlist)");
     }
     if (nprobe_ <= 0) {
         nprobe_ = 1;
@@ -49,7 +49,7 @@ void RetrievalIndex::load(const std::string& path, ggml_backend_t backend) {
     const auto lengths = model.read_f32("index.list_lengths");
     if (static_cast<int64_t>(offsets.size()) != nlist_ ||
         static_cast<int64_t>(lengths.size()) != nlist_) {
-        throw std::runtime_error("检索索引 list_offsets/lengths 尺寸不符");
+        throw std::runtime_error("Retrieval index list_offsets/lengths size mismatch");
     }
     offsets_.resize(static_cast<size_t>(nlist_));
     lengths_.resize(static_cast<size_t>(nlist_));
@@ -59,7 +59,7 @@ void RetrievalIndex::load(const std::string& path, ggml_backend_t backend) {
     }
     if (static_cast<int64_t>(centroids_.size()) != dim_ * nlist_ ||
         static_cast<int64_t>(vectors_.size()) != dim_ * ntotal_) {
-        throw std::runtime_error("检索索引张量元素数不符");
+        throw std::runtime_error("Retrieval index tensor element count mismatch");
     }
 }
 
@@ -68,7 +68,7 @@ void RetrievalIndex::search(const float* query, int64_t k, std::vector<Hit>& out
     if (!loaded() || k <= 0) {
         return;
     }
-    // 1) 质心距离，取 nprobe 个最近 list（升序）
+    // 1) Centroid distances; take the nprobe nearest lists (ascending)
     std::vector<Hit> lists;
     lists.reserve(static_cast<size_t>(nlist_));
     for (int64_t i = 0; i < nlist_; ++i) {
@@ -80,7 +80,7 @@ void RetrievalIndex::search(const float* query, int64_t k, std::vector<Hit>& out
             return a.score != b.score ? a.score < b.score : a.position < b.position;
         });
 
-    // 2) 依次扫描这些 list，维护 top-k 最大堆（对齐 FAISS scan_one_list 语义）
+    // 2) Scan these lists in turn, maintaining a top-k max-heap (aligned with FAISS scan_one_list semantics)
     std::vector<Hit>* heap = &out;
     auto cmp = [](const Hit& a, const Hit& b) { return a.score < b.score; };
     for (int64_t li = 0; li < probe; ++li) {
@@ -101,7 +101,7 @@ void RetrievalIndex::search(const float* query, int64_t k, std::vector<Hit>& out
             }
         }
     }
-    // 3) 升序输出（score 相同按 position，保证确定性）
+    // 3) Output in ascending order (ties on score broken by position, ensuring determinism)
     std::sort(heap->begin(), heap->end(),
         [](const Hit& a, const Hit& b) {
             return a.score != b.score ? a.score < b.score : a.position < b.position;
@@ -141,7 +141,7 @@ std::vector<float> RetrievalIndex::blend(const std::vector<float>& query, int64_
                 dst[c] += w * vec[c];
             }
         }
-        // RVC 混合：npy * index_rate + (1 - index_rate) * feats
+        // RVC blending: npy * index_rate + (1 - index_rate) * feats
         const float* src = query.data() + f * dim_;
         for (int64_t c = 0; c < dim_; ++c) {
             dst[c] = dst[c] * index_rate + (1.0f - index_rate) * src[c];

@@ -1,8 +1,8 @@
 // rmvpe.h
-// RMVPE 音高提取（DeepUnet + BiGRU + 360 类显著性头）。
-// 结构对齐参考实现（0xShug0/audio.cpp，MIT）：4 张子图
-//   feature（DeepUnet 窗口推理）/ gru_forward / gru_reverse / head。
-// 数值目标：与 RVC Python（infer/lib/rmvpe.py）corr ≥ 0.999。
+// RMVPE pitch extraction (DeepUnet + BiGRU + 360-class salience head).
+// Structure follows the reference implementation (0xShug0/audio.cpp, MIT): 4 subgraphs
+//   feature (DeepUnet windowed inference) / gru_forward / gru_reverse / head.
+// Numeric target: corr ≥ 0.999 with RVC Python (infer/lib/rmvpe.py).
 
 #pragma once
 
@@ -31,22 +31,22 @@ namespace rmvpe {
         float mel_fmin = 30.0f;
         float mel_fmax = 8000.0f;
         float mel_clamp = 1e-5f;
-        bool conv_flat = false;     // GGUF rvc.conv_flat：卷积权重为展平布局（量化友好）
+        bool conv_flat = false;     // GGUF rvc.conv_flat: conv weights use a flattened layout (quantization-friendly)
     };
 
     Config read_config(const GgufModel& model);
 
     struct Result {
-        int64_t frames = 0;                 // log-mel 帧数（未 pad）
-        int64_t padded_frames = 0;          // 32 对齐后的帧数
-        std::vector<float> mel;             // [n_mels, frames]（mel 行主序）
-        std::vector<float> hidden;          // [frames, n_classes] 显著性
+        int64_t frames = 0;                 // log-mel frame count (unpadded)
+        int64_t padded_frames = 0;          // frame count after alignment to 32
+        std::vector<float> mel;             // [n_mels, frames] (mel row-major)
+        std::vector<float> hidden;          // [frames, n_classes] salience
         std::vector<float> hidden_padded;   // [padded_frames, n_classes]
-        std::vector<float> f0;              // [frames] Hz，0 表示无声
+        std::vector<float> f0;              // [frames] Hz; 0 means unvoiced
     };
 
-    // 提取器：持有 4 张子图的上下文与缓存，可多次调用；
-    // 输入长度变化时自动重建对应尺寸的图。
+    // Extractor: holds contexts and caches for the 4 subgraphs; reusable across calls;
+    // rebuilds graphs for the corresponding size when the input length changes.
     class RmvpeExtractor {
     public:
         RmvpeExtractor(const GgufModel& model, ggml_backend_t backend);
@@ -54,10 +54,10 @@ namespace rmvpe {
         RmvpeExtractor(const RmvpeExtractor&) = delete;
         RmvpeExtractor& operator=(const RmvpeExtractor&) = delete;
 
-        // 单声道 16k 浮点音频 -> 显著性/ f0（threshold 对应 Python thred=0.03）
+        // Mono 16k float audio -> salience / f0 (threshold corresponds to Python thred=0.03)
         Result infer(const std::vector<float>& audio_16k, float threshold = 0.03f);
 
-        // 仅 mel 前端（P3 自检用）
+        // mel front end only (for the P3 self-test)
         std::vector<float> compute_mel(const std::vector<float>& audio_16k,
             int64_t* frames_out = nullptr) const;
 

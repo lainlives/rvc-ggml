@@ -1,15 +1,15 @@
-# RVC-Train-GGML —— 基于 train.cpp 的 RVC 训练项目
+# RVC-Train-GGML -- RVC training project built on train.cpp
 #
-# 架构与模块说明：见 docs/架构设计.md、docs/使用指南.md
-# 构建：powershell -ExecutionPolicy Bypass -File scripts\dev_build.ps1
+# Architecture and module docs: see docs/architecture.md, docs/usage_guide.md
+# Build: powershell -ExecutionPolicy Bypass -File scripts\dev_build.ps1
 #
-# 依赖策略（monorepo 内相对路径，可用 CMake 变量覆盖指向外部副本）：
-#   - train.cpp（traincpp） 默认 ../third_party/train.cpp -> rvc-train.exe 链接 traincpp::traincpp（Vulkan/CPU）
-#   - RVC-GGML（rvc_core）  默认 ../rvc-ggml             -> rvc-prep.exe  链接 rvc_core（ggml Vulkan）
-#   - ggml                 由 RVC-GGML 解析（官方 v0.23.0 + 自动补丁，或本地 RVC_GGML_DIR）
+# Dependency strategy (relative paths inside the monorepo; CMake variables can override to point at external copies):
+#   - train.cpp (traincpp) defaults to ../third_party/train.cpp -> rvc-train.exe links traincpp::traincpp (Vulkan/CPU)
+#   - RVC-GGML (rvc_core)  defaults to ../rvc-ggml             -> rvc-prep.exe  links rvc_core (ggml Vulkan)
+#   - ggml                 resolved by RVC-GGML (official v0.23.0 + automatic patches, or local RVC_GGML_DIR)
 #
-# 注意：两个 Vulkan 后端（ggml 与 traincpp）不进同一进程（集成指南 R28），
-#       因此拆成两个 exe：rvc-prep 不链 traincpp；rvc-train 不链 ggml/rvc_core。
+# Note: the two Vulkan backends (ggml and traincpp) do not share one process (integration guide R28),
+#       hence split into two exes: rvc-prep does not link traincpp; rvc-train does not link ggml/rvc_core.
 
 cmake_minimum_required(VERSION 3.20)
 
@@ -20,12 +20,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
-    # /utf-8 全局（源码含中文注释）；/W4 只加在本项目自己的目标上，
-    # 避免把 ggml 等依赖的既有警告（其按 /W3 维护）刷进构建输出
+    # /utf-8 globally (sources contain UTF-8 text); /W4 is added only to this project's own targets,
+    # to avoid flooding the build output with existing warnings from ggml and other dependencies (maintained at /W3)
     add_compile_options(/utf-8)
 endif()
 
-# 统一输出目录（多配置生成器见下）
+# Unified output directory (multi-config generators below)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
@@ -35,10 +35,10 @@ foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${_cfg} ${CMAKE_BINARY_DIR}/lib)
 endforeach()
 
-# ------------------------------------------------------------------ 依赖路径
-set(RVCTRAIN_TRAINCPP_DIR "" CACHE PATH "train.cpp 源码目录（默认 ../third_party/train.cpp）")
-set(RVCTRAIN_RVCGGML_DIR  "" CACHE PATH "RVC-GGML 源码目录（默认 ../rvc-ggml）")
-set(RVCTRAIN_GGML_DIR     "" CACHE PATH "ggml 源码目录（可选，转发给 RVC-GGML；默认由 RVC-GGML 解析）")
+# ------------------------------------------------------------------ Dependency paths
+set(RVCTRAIN_TRAINCPP_DIR "" CACHE PATH "train.cpp source directory (default: ../third_party/train.cpp)")
+set(RVCTRAIN_RVCGGML_DIR  "" CACHE PATH "RVC-GGML source directory (default: ../rvc-ggml)")
+set(RVCTRAIN_GGML_DIR     "" CACHE PATH "ggml source directory (optional, forwarded to RVC-GGML; by default resolved by RVC-GGML)")
 
 if(NOT RVCTRAIN_TRAINCPP_DIR)
     set(RVCTRAIN_TRAINCPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/train.cpp")
@@ -48,26 +48,26 @@ if(NOT RVCTRAIN_RVCGGML_DIR)
 endif()
 
 if(NOT EXISTS "${RVCTRAIN_TRAINCPP_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "未找到 train.cpp：${RVCTRAIN_TRAINCPP_DIR}（用 -DRVCTRAIN_TRAINCPP_DIR=... 指定）")
+    message(FATAL_ERROR "train.cpp not found: ${RVCTRAIN_TRAINCPP_DIR} (specify with -DRVCTRAIN_TRAINCPP_DIR=...)")
 endif()
 if(NOT EXISTS "${RVCTRAIN_RVCGGML_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "未找到 RVC-GGML：${RVCTRAIN_RVCGGML_DIR}（用 -DRVCTRAIN_RVCGGML_DIR=... 指定）")
+    message(FATAL_ERROR "RVC-GGML not found: ${RVCTRAIN_RVCGGML_DIR} (specify with -DRVCTRAIN_RVCGGML_DIR=...)")
 endif()
 
-# ------------------------------------------------------------------ train.cpp（traincpp）
-# 关闭 traincpp 的测试/示例/安装，只取库本体
-set(TRC_BUILD_TESTS    OFF CACHE BOOL "RVC-Train-GGML：关闭 traincpp 测试" FORCE)
-set(TRC_BUILD_EXAMPLES OFF CACHE BOOL "RVC-Train-GGML：关闭 traincpp 示例" FORCE)
-set(TRC_INSTALL        OFF CACHE BOOL "RVC-Train-GGML：关闭 traincpp 安装规则" FORCE)
+# ------------------------------------------------------------------ train.cpp (traincpp)
+# Disable traincpp tests/examples/install; keep only the library itself
+set(TRC_BUILD_TESTS    OFF CACHE BOOL "RVC-Train-GGML: disable traincpp tests" FORCE)
+set(TRC_BUILD_EXAMPLES OFF CACHE BOOL "RVC-Train-GGML: disable traincpp examples" FORCE)
+set(TRC_INSTALL        OFF CACHE BOOL "RVC-Train-GGML: disable traincpp install rules" FORCE)
 add_subdirectory("${RVCTRAIN_TRAINCPP_DIR}" "${CMAKE_BINARY_DIR}/_deps/traincpp")
 
-# ------------------------------------------------------------------ RVC-GGML（rvc_core + ggml）
+# ------------------------------------------------------------------ RVC-GGML (rvc_core + ggml)
 if(RVCTRAIN_GGML_DIR)
-    set(RVC_GGML_DIR "${RVCTRAIN_GGML_DIR}" CACHE PATH "ggml 源码目录（由 RVC-Train-GGML 转发）" FORCE)
+    set(RVC_GGML_DIR "${RVCTRAIN_GGML_DIR}" CACHE PATH "ggml source directory (forwarded by RVC-Train-GGML)" FORCE)
 endif()
 add_subdirectory("${RVCTRAIN_RVCGGML_DIR}" "${CMAKE_BINARY_DIR}/_deps/rvc-ggml")
 
-# ------------------------------------------------------------------ rvc-prep（预处理，ggml Vulkan）
+# ------------------------------------------------------------------ rvc-prep (preprocessing, ggml Vulkan)
 add_executable(rvc-prep
     src/main_prep.cpp
     src/cli/prep_wizard.cpp
@@ -91,11 +91,11 @@ target_include_directories(rvc-prep PRIVATE src)
 target_link_libraries(rvc-prep PRIVATE rvc_core)
 if(MSVC)
     target_compile_options(rvc-prep PRIVATE /W4)
-    # 与 RVC-GGML/ggml 保持一致的静态 CRT（否则 MT/MD 混链会 LNK2038）
+    # Static CRT consistent with RVC-GGML/ggml (otherwise mixing MT/MD causes LNK2038)
     set_property(TARGET rvc-prep PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# ------------------------------------------------------------------ rvc-train（训练，traincpp Vulkan）
+# ------------------------------------------------------------------ rvc-train (training, traincpp Vulkan)
 add_executable(rvc-train
     src/main_train.cpp
     src/common/json.cpp
@@ -138,5 +138,5 @@ if(MSVC)
     target_compile_options(rvc-train PRIVATE /W4)
 endif()
 
-message(STATUS "RVC-Train-GGML：train.cpp = ${RVCTRAIN_TRAINCPP_DIR}")
-message(STATUS "RVC-Train-GGML：RVC-GGML  = ${RVCTRAIN_RVCGGML_DIR}")
+message(STATUS "RVC-Train-GGML: train.cpp = ${RVCTRAIN_TRAINCPP_DIR}")
+message(STATUS "RVC-Train-GGML: RVC-GGML  = ${RVCTRAIN_RVCGGML_DIR}")

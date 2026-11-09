@@ -1,4 +1,4 @@
-// npy.cpp —— M4-5a 实现（见 npy.h 头注释）
+// npy.cpp -- M4-5a implementation (see the npy.h header comment)
 
 #include "export/npy.h"
 
@@ -18,7 +18,7 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) {
         if (err) {
-            *err = "无法打开: " + path;
+            *err = "cannot open: " + path;
         }
         return false;
     }
@@ -27,14 +27,14 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     out->resize(static_cast<std::size_t>(size));
     if (size > 0 && !f.read(reinterpret_cast<char*>(out->data()), size)) {
         if (err) {
-            *err = "读取失败: " + path;
+            *err = "read failed: " + path;
         }
         return false;
     }
     return true;
 }
 
-// 在 header 文本里找 `'key': value` 的值片段（不含键）
+// Find the value fragment of `'key': value` in the header text (excluding the key)
 bool find_field(const std::string& header, const char* key, std::string* value) {
     const std::string pat = std::string("'") + key + "'";
     const std::size_t k = header.find(pat);
@@ -68,7 +68,7 @@ bool find_field(const std::string& header, const char* key, std::string* value) 
 bool parse_shape(const std::string& text, int64_t* rows, int64_t* cols, std::string* err) {
     if (text.empty() || text[0] != '(') {
         if (err) {
-            *err = "npy shape 解析失败: " + text;
+            *err = "npy shape parse failed: " + text;
         }
         return false;
     }
@@ -76,7 +76,7 @@ bool parse_shape(const std::string& text, int64_t* rows, int64_t* cols, std::str
     std::stringstream ss(text.substr(1));
     std::string item;
     while (std::getline(ss, item, ',')) {
-        // 去空白
+        // Strip whitespace
         const std::size_t b = item.find_first_not_of(" \t");
         if (b == std::string::npos) {
             continue;
@@ -87,14 +87,14 @@ bool parse_shape(const std::string& text, int64_t* rows, int64_t* cols, std::str
             dims.push_back(std::stoll(tok));
         } catch (const std::exception&) {
             if (err) {
-                *err = "npy shape 维度非法: " + tok;
+                *err = "invalid npy shape dimension: " + tok;
             }
             return false;
         }
     }
     if (dims.empty() || dims.size() > 2) {
         if (err) {
-            *err = "npy 仅支持 1D/2D 数组";
+            *err = "npy supports only 1D/2D arrays";
         }
         return false;
     }
@@ -116,7 +116,7 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
     }
     if (bytes.size() < 10 || std::memcmp(bytes.data(), "\x93NUMPY", 6) != 0) {
         if (err) {
-            *err = "不是 .npy 文件（magic 不符）: " + path;
+            *err = "not a .npy file (bad magic): " + path;
         }
         return false;
     }
@@ -126,7 +126,7 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
     if (major == 1) {
         if (bytes.size() < pos + 2) {
             if (err) {
-                *err = "npy header 截断: " + path;
+                *err = "truncated npy header: " + path;
             }
             return false;
         }
@@ -136,7 +136,7 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
     } else if (major == 2 || major == 3) {
         if (bytes.size() < pos + 4) {
             if (err) {
-                *err = "npy header 截断: " + path;
+                *err = "truncated npy header: " + path;
             }
             return false;
         }
@@ -147,13 +147,13 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
         pos += 4;
     } else {
         if (err) {
-            *err = "npy 版本不支持: " + std::to_string(major);
+            *err = "unsupported npy version: " + std::to_string(major);
         }
         return false;
     }
     if (bytes.size() < pos + header_len) {
         if (err) {
-            *err = "npy header 长度越界: " + path;
+            *err = "npy header length out of bounds: " + path;
         }
         return false;
     }
@@ -166,7 +166,7 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
     if (!find_field(header, "descr", &descr) || !find_field(header, "fortran_order", &fortran) ||
         !find_field(header, "shape", &shape)) {
         if (err) {
-            *err = "npy header 缺少 descr/fortran_order/shape: " + path;
+            *err = "npy header missing descr/fortran_order/shape: " + path;
         }
         return false;
     }
@@ -175,13 +175,13 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
     }
     if (descr != "<f4" && descr != "=f4" && descr != "|f4") {
         if (err) {
-            *err = "npy dtype 仅支持 F32（<f4）：" + descr + " @ " + path;
+            *err = "npy dtype supports only F32 (<f4): " + descr + " @ " + path;
         }
         return false;
     }
     if (fortran.find("True") != std::string::npos) {
         if (err) {
-            *err = "npy fortran_order=True 不支持（需 C 序）: " + path;
+            *err = "npy fortran_order=True is not supported (C order required): " + path;
         }
         return false;
     }
@@ -191,7 +191,7 @@ bool load_npy_f32(const std::string& path, std::vector<float>* out, int64_t* row
     const int64_t n = *rows * *cols;
     if (n < 0 || static_cast<std::size_t>(n) * 4 > bytes.size() - pos) {
         if (err) {
-            *err = "npy 数据长度不足: " + path;
+            *err = "npy data length too short: " + path;
         }
         return false;
     }
@@ -210,7 +210,7 @@ bool load_npy_dir_f32(const std::string& dir, std::vector<float>* out, int64_t* 
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) {
         if (err) {
-            *err = "不是目录: " + dir;
+            *err = "not a directory: " + dir;
         }
         return false;
     }
@@ -228,7 +228,7 @@ bool load_npy_dir_f32(const std::string& dir, std::vector<float>* out, int64_t* 
     std::sort(names.begin(), names.end());
     if (names.empty()) {
         if (err) {
-            *err = "目录下没有 .npy: " + dir;
+            *err = "no .npy files in directory: " + dir;
         }
         return false;
     }
@@ -243,7 +243,7 @@ bool load_npy_dir_f32(const std::string& dir, std::vector<float>* out, int64_t* 
             *cols = c;
         } else if (c != *cols) {
             if (err) {
-                *err = "目录内 .npy 列数不一致: " + p;
+                *err = "inconsistent .npy column count in directory: " + p;
             }
             return false;
         }

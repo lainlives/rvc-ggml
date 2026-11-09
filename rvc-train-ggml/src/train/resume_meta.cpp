@@ -1,4 +1,4 @@
-// RVC-Train-GGML - M7-5 续训元数据实现（src/train/resume_meta.cpp）
+// RVC-Train-GGML - M7-5 resume metadata implementation (src/train/resume_meta.cpp)
 #include "train/resume_meta.h"
 
 #include "common/json.h"
@@ -146,7 +146,7 @@ std::vector<std::string> trainer_config_signature(const TrainerConfig& cfg) {
     push_i(&v, "model.spec_channels", M.spec_channels);
     push_i(&v, "model.segment_size", M.segment_size);
 
-    // 影响训练轨迹的数据/优化超参（run 段/out/device/resume/export/log_interval 不参与）
+    // Data/optimization hyperparameters that affect the training trajectory (run section/out/device/resume/export/log_interval are excluded)
     push_i(&v, "train.batch_size", cfg.batch_size);
     push_i(&v, "train.bucket", cfg.bucket);
     push_i(&v, "train.disc_len", cfg.disc_len);
@@ -206,14 +206,14 @@ bool resume_meta_write(const ResumeMeta& m, const std::string& path, std::string
     std::ofstream f(path, std::ios::trunc | std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法写入续训元数据: " + path;
+            *err = "cannot write resume metadata: " + path;
         }
         return false;
     }
     f << s;
     if (!f.good()) {
         if (err != nullptr) {
-            *err = "写入续训元数据失败: " + path;
+            *err = "failed to write resume metadata: " + path;
         }
         return false;
     }
@@ -223,7 +223,7 @@ bool resume_meta_write(const ResumeMeta& m, const std::string& path, std::string
 bool resume_meta_read(const std::string& path, ResumeMeta* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "resume_meta_read: out 为空";
+            *err = "resume_meta_read: out is null";
         }
         return false;
     }
@@ -233,7 +233,7 @@ bool resume_meta_read(const std::string& path, ResumeMeta* out, std::string* err
     }
     if (!root.is_object()) {
         if (err != nullptr) {
-            *err = "续训元数据根不是 JSON 对象: " + path;
+            *err = "resume metadata root is not a JSON object: " + path;
         }
         return false;
     }
@@ -254,7 +254,7 @@ bool resume_meta_read(const std::string& path, ResumeMeta* out, std::string* err
     const common::JsonValue* sig = root.find("config_signature");
     if (sig == nullptr || !sig->is_array()) {
         if (err != nullptr) {
-            *err = "续训元数据缺少 config_signature 数组: " + path;
+            *err = "resume metadata missing the config_signature array: " + path;
         }
         return false;
     }

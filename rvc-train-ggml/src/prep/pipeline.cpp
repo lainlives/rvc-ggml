@@ -1,4 +1,4 @@
-// pipeline.cpp —— M4-1..M4-4 预处理核心流程实现（f0/feat/spec/缓存 + 调试 dump）
+// pipeline.cpp -- M4-1..M4-4 preprocessing core pipeline implementation (f0/feat/spec/cache + debug dump)
 
 #include "prep/pipeline.h"
 
@@ -32,7 +32,7 @@ bool ensure_dir(const std::string& dir, std::string* err) {
     fs::create_directories(dir, ec);
     if (ec) {
         if (err) {
-            *err = "创建目录失败: " + dir + " (" + ec.message() + ")";
+            *err = "failed to create directory: " + dir + " (" + ec.message() + ")";
         }
         return false;
     }
@@ -43,7 +43,7 @@ bool write_text(const std::string& path, const std::string& text, std::string* e
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
         if (err) {
-            *err = "无法写入: " + path;
+            *err = "cannot write: " + path;
         }
         return false;
     }
@@ -57,7 +57,7 @@ std::string fmt_hex(double v) {
     return ss.str();
 }
 
-// 运行核心流程（load 已就绪）；dump 依据 opt.debug_dump_dir，缓存依据 opt.cache_dir
+// Run the core pipeline (load already ready); dumping driven by opt.debug_dump_dir, caching by opt.cache_dir
 bool run_prep_core(const MonoAudio& load, const std::string& case_name,
                    const std::string& source_name, const PrepOptions& opt, PrepFileResult* out,
                    std::string* err) {
@@ -77,7 +77,7 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
         return (fs::path(opt.cache_dir) / cache_sample_relpath(id, kind)).string();
     };
 
-    // M4-2：有效分块的 f0（RMVPE）计算与落盘；文件命名与 golden 一致
+    // M4-2: compute and dump f0 (RMVPE) for valid chunks; file naming matches golden
     auto handle_f0 = [&](const NormChunk& nc, int64_t idx1, ChunkInfo* info,
                          CacheSampleInfo* si) -> bool {
         if (!opt.with_f0 || opt.rmvpe == nullptr || !nc.valid) {
@@ -115,7 +115,7 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
         return true;
     };
 
-    // M4-3：有效分块的 HuBERT 特征计算与落盘（文件命名与 golden 一致；维度由 version 决定）
+    // M4-3: compute and dump HuBERT features for valid chunks (file naming matches golden; dims decided by version)
     auto handle_feat = [&](const NormChunk& nc, int64_t idx1, ChunkInfo* info,
                            CacheSampleInfo* si) -> bool {
         if (!opt.with_feat || opt.hubert == nullptr || !nc.valid || nc.audio16k.empty()) {
@@ -145,7 +145,7 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
         return true;
     };
 
-    // M4-4：有效分块的线性谱（输入 = 0_gt F32；官方 spectrogram_torch 语义，参见 spec.h）
+    // M4-4: linear spectrogram for valid chunks (input = 0_gt F32; official spectrogram_torch semantics, see spec.h)
     auto handle_spec = [&](const NormChunk& nc, int64_t idx1, ChunkInfo* info,
                            CacheSampleInfo* si) -> bool {
         if (!opt.with_spec || !nc.valid || nc.gt.empty()) {
@@ -178,7 +178,7 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
         return true;
     };
 
-    // ---------- 48Hz 高通（因果 lfilter，double） ----------
+    // ---------- 48Hz high-pass (causal lfilter, double) ----------
     std::vector<double> b;
     std::vector<double> a;
     butter_highpass_ba(kButterOrder, kButterCutoffHz, static_cast<double>(opt.target_sr), &b, &a);
@@ -246,17 +246,17 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
         }
     }
 
-    // ---------- 3.7s 分块 + 峰值归一化 ----------
+    // ---------- 3.7s chunking + peak normalization ----------
     std::ostringstream chunks;
     chunks << "# rvc-prep chunks v1\n# index slice start_in_slice n_samples valid\n";
 
     const int64_t step = static_cast<int64_t>(
-        static_cast<double>(opt.target_sr) * (opt.per - opt.overlap));  // int(...) 截断
+        static_cast<double>(opt.target_sr) * (opt.per - opt.overlap));  // int(...) truncation
     const double tail_seconds = opt.per + opt.overlap;
     const int64_t take = static_cast<int64_t>(static_cast<double>(opt.target_sr) * opt.per);
 
     int idx1 = 0;
-    std::vector<double> tmp_audio;  // 官方 line 109 用“最后一次赋值”的 tmp_audio
+    std::vector<double> tmp_audio;  // official line 109 uses the tmp_audio of its last assignment
     for (std::size_t si = 0; si < out->slices.size(); ++si) {
         const SliceRange& r = out->slices[si];
         const int64_t len = r.end_sample - r.begin_sample;
@@ -267,7 +267,7 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
             const int64_t remain = len > start ? len - start : 0;
             const bool has_tail = static_cast<double>(remain) > tail_seconds * static_cast<double>(opt.target_sr);
             const int64_t count = has_tail ? take : remain;
-            const int64_t hp_begin = r.begin_sample + start;  // 相对 hp 波形的样本偏移
+            const int64_t hp_begin = r.begin_sample + start;  // sample offset relative to the hp waveform
             tmp_audio.assign(hp.begin() + static_cast<std::ptrdiff_t>(hp_begin),
                              hp.begin() + static_cast<std::ptrdiff_t>(hp_begin + count));
 
@@ -338,13 +338,13 @@ bool run_prep_core(const MonoAudio& load, const std::string& case_name,
         }
     }
 
-    // 官方 line 109：for 循环结束后的“末块尾部”写入（idx1 为当前值）
+    // official line 109: write the last chunk's tail after the for loop ends (with the current idx1)
     if (!out->slices.empty()) {
         const NormChunk nc = normalize_chunk(tmp_audio, opt.target_sr, !opt.no_16k);
         ChunkInfo info;
         info.index = idx1;
         info.slice_index = static_cast<int>(out->slices.size()) - 1;
-        info.start_in_slice = -1;  // 官方此处不记录（最终尾部块）
+        info.start_in_slice = -1;  // official does not record this here (final tail chunk)
         info.n_samples = static_cast<int64_t>(tmp_audio.size());
         info.valid = nc.valid;
         CacheSampleInfo csi;

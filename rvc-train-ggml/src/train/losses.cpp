@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 训练损失实现（src/train/losses.cpp）
+// RVC-Train-GGML - training losses implementation (src/train/losses.cpp)
 #include "train/losses.h"
 
 namespace rvc_train {
@@ -8,7 +8,7 @@ using namespace traincpp;
 
 namespace {
 
-// 全元素均值 → [1]（先 cont + 展平，规避 mean 只归约 ne0 的语义）
+// All-element mean -> [1] (cont + flatten first, avoiding the mean semantics that only reduces over ne0)
 Tensor* mean_all(Context* ctx, Tensor* t) {
     Tensor* c = cont(ctx, t);
     if (c == nullptr) {
@@ -21,7 +21,7 @@ Tensor* mean_all(Context* ctx, Tensor* t) {
     return mean(ctx, flat);
 }
 
-// Σ both 相加（scalar [1]）
+// Add the two Σ terms (scalar [1])
 Tensor* add_scalar(Context* ctx, Tensor* a, Tensor* b) {
     if (a == nullptr) {
         return b;
@@ -76,7 +76,7 @@ Tensor* loss_feature_matching(Context* ctx,
     if (loss == nullptr) {
         return nullptr;
     }
-    // 官方 feature_loss 末尾 ×2
+    // Official feature_loss appends ×2 at the end
     return scale(ctx, loss, 2.0f);
 }
 

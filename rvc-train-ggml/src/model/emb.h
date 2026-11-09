@@ -1,6 +1,6 @@
-// RVC-Train-GGML - 说话人嵌入 emb_g（src/model/emb.h）
+// RVC-Train-GGML - speaker embedding emb_g (src/model/emb.h)
 //
-// g = emb_g(sid)：按 sid 查表（torch Embedding）。
+// g = emb_g(sid): lookup by sid (torch Embedding).
 #pragma once
 
 #include "model/model.h"
@@ -12,8 +12,8 @@
 namespace rvc_train {
 namespace model {
 
-// 前向：sid 为 I32 [B]（1~3 维），权重 emb_g.weight ne=[dim, n_spk]（torch [n_spk, dim]）；
-// 输出 ne=[dim, B, ...]。参数缺失时返回 nullptr 并写入 err。
+// Forward: sid is I32 [B] (1-3 dims), weight emb_g.weight ne=[dim, n_spk] (torch [n_spk, dim]);
+// output ne=[dim, B, ...]. Returns nullptr and writes err when the parameter is missing.
 traincpp::Tensor* emb_g_forward(traincpp::Context* ctx, const ModelParams& params,
                                 traincpp::Tensor* sid, std::string* err);
 

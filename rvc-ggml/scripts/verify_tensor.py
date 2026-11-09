@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# verify_tensor.py — 通用 raw float32 张量对比（C++ 输出 vs Python 参考）
+# verify_tensor.py — generic raw float32 tensor comparison (C++ output vs Python reference)
 #
-# 用法:
+# Usage:
 #   <python> scripts/verify_tensor.py --ref output/ref/hubert_v1_finalproj.raw \
 #       --test output/ref/cpp_hubert_v1_finalproj.raw --shape 249,256
 #   <python> scripts/verify_tensor.py --ref a.raw --test b.raw --shape 249,768 --tolerance 1e-3
@@ -18,19 +18,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ref", required=True)
     parser.add_argument("--test", required=True)
-    parser.add_argument("--shape", required=True, help="逗号分隔，如 249,256")
-    parser.add_argument("--tolerance", type=float, default=1e-4, help="max abs err 容差")
-    parser.add_argument("--corr-min", type=float, default=0.99, help="最小相关系数")
+    parser.add_argument("--shape", required=True, help="comma-separated, e.g. 249,256")
+    parser.add_argument("--tolerance", type=float, default=1e-4, help="max abs err tolerance")
+    parser.add_argument("--corr-min", type=float, default=0.99, help="minimum correlation coefficient")
     args = parser.parse_args()
 
     shape = tuple(int(x) for x in args.shape.split(","))
     ref = np.fromfile(args.ref, dtype=np.float32)
     test = np.fromfile(args.test, dtype=np.float32)
     if ref.size != test.size:
-        print(f"[FAIL] 元素数不一致: ref={ref.size} test={test.size}")
+        print(f"[FAIL] element count mismatch: ref={ref.size} test={test.size}")
         return 1
     if ref.size != int(np.prod(shape)):
-        print(f"[WARN] 元素数 {ref.size} 与 shape {shape} 不符")
+        print(f"[WARN] element count {ref.size} does not match shape {shape}")
 
     ref = ref.reshape(shape)
     test = test.reshape(shape)

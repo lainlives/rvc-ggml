@@ -1,4 +1,4 @@
-// spec.cpp —— M4-4 线性谱实现（pocketfft，主机侧；语义见 spec.h 头注释）
+// spec.cpp -- M4-4 linear spectrogram implementation (pocketfft, host side; semantics in the spec.h header comment)
 
 #include "prep/spec.h"
 
@@ -7,7 +7,7 @@
 
 #define POCKETFFT_CACHE_SIZE 16
 #if defined(_MSC_VER)
-#pragma warning(push, 0)  // 第三方 header（pocketfft）自带 /W4 警告，不属本项目
+#pragma warning(push, 0)  // third-party header (pocketfft) emits /W4 warnings of its own, not this project's
 #endif
 #include "pocketfft_hdronly.h"
 #if defined(_MSC_VER)
@@ -17,13 +17,13 @@
 namespace rvc_train::prep {
 namespace {
 
-constexpr double kMagEps = 2e-7;  // 官方 sqrt(re²+im²+2e-7)
+constexpr double kMagEps = 2e-7;  // official sqrt(re²+im²+2e-7)
 constexpr double kPi = 3.14159265358979323846;
 
 } // namespace
 
 int64_t SpecConfig::frames_for(int64_t gt_samples) const {
-    // Python：int((n_fft-hop)/2)（正数截断）；C++ 正整数除法一致
+    // Python: int((n_fft-hop)/2) (truncation of a positive number); C++ positive-integer division matches
     const int64_t pad = (static_cast<int64_t>(n_fft) - hop) / 2;
     const int64_t padded = gt_samples + 2 * pad;
     if (padded < n_fft) {
@@ -35,19 +35,19 @@ int64_t SpecConfig::frames_for(int64_t gt_samples) const {
 bool SpecConfig::validate(std::string* err) const {
     if (n_fft <= 0 || hop <= 0 || win <= 0) {
         if (err) {
-            *err = "spec 配置非法：n_fft/hop/win 必须为正";
+            *err = "invalid spec config: n_fft/hop/win must be positive";
         }
         return false;
     }
     if (hop > n_fft) {
         if (err) {
-            *err = "spec 配置非法：hop > n_fft（官方 reflect pad 语义要求 hop<=n_fft）";
+            *err = "invalid spec config: hop > n_fft (official reflect pad semantics require hop<=n_fft)";
         }
         return false;
     }
     if (win > n_fft) {
         if (err) {
-            *err = "spec 配置非法：win > n_fft";
+            *err = "invalid spec config: win > n_fft";
         }
         return false;
     }
@@ -65,7 +65,7 @@ bool compute_linear_spec(const float* gt, int64_t n, const SpecConfig& cfg, Spec
     }
     if (gt == nullptr || n <= 0) {
         if (err) {
-            *err = "spec 输入为空";
+            *err = "spec input is empty";
         }
         return false;
     }
@@ -73,12 +73,12 @@ bool compute_linear_spec(const float* gt, int64_t n, const SpecConfig& cfg, Spec
     const int64_t pad = (static_cast<int64_t>(cfg.n_fft) - cfg.hop) / 2;
     if (pad >= n) {
         if (err) {
-            *err = "spec 输入过短：reflect pad 超过波形长度";
+            *err = "spec input too short: reflect pad exceeds waveform length";
         }
         return false;
     }
 
-    // ---------- reflect pad（numpy mode='reflect'：左 x[pad-k]，右 x[n-2-j]） ----------
+    // ---------- reflect pad (numpy mode='reflect': left x[pad-k], right x[n-2-j]) ----------
     const int64_t padded_len = n + 2 * pad;
     std::vector<double> padded(static_cast<std::size_t>(padded_len));
     for (int64_t k = 0; k < pad; ++k) {
@@ -91,7 +91,7 @@ bool compute_linear_spec(const float* gt, int64_t n, const SpecConfig& cfg, Spec
         padded[static_cast<std::size_t>(pad + n + j)] = static_cast<double>(gt[n - 2 - j]);
     }
 
-    // ---------- 周期 Hann（win < n_fft 时居中补零，torch 语义） ----------
+    // ---------- periodic Hann (centered zero padding when win < n_fft, torch semantics) ----------
     std::vector<double> window(static_cast<std::size_t>(cfg.n_fft), 0.0);
     const int woff = (cfg.n_fft - cfg.win) / 2;
     for (int i = 0; i < cfg.win; ++i) {
@@ -102,13 +102,13 @@ bool compute_linear_spec(const float* gt, int64_t n, const SpecConfig& cfg, Spec
     const int64_t frames = cfg.frames_for(n);
     if (frames <= 0) {
         if (err) {
-            *err = "spec 帧数为 0（波形短于 n_fft）";
+            *err = "spec frame count is 0 (waveform shorter than n_fft)";
         }
         return false;
     }
     const int64_t bins = cfg.bins();
 
-    // ---------- 逐帧 r2c + 幅度 ----------
+    // ---------- per-frame r2c + magnitude ----------
     out->frames = frames;
     out->bins = bins;
     out->values.assign(static_cast<std::size_t>(bins * frames), 0.0f);

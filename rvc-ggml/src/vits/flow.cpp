@@ -1,7 +1,7 @@
 // flow.cpp
-// RVC flow（ResidualCouplingBlock）逆变换（reverse=True）：
-//   顺序 = [Flip, flow3, Flip, flow2, Flip, flow1, Flip, flow0]
-//   耦合层 mean_only：x1' = x1 - m，m = post(WN(pre(x0), g))
+// RVC flow (ResidualCouplingBlock) inverse transform (reverse=True):
+//   order = [Flip, flow3, Flip, flow2, Flip, flow1, Flip, flow0]
+//   coupling layer mean_only: x1' = x1 - m, m = post(WN(pre(x0), g))
 
 #include "vits/synthesizer.h"
 #include "vits/modules.h"
@@ -16,12 +16,12 @@ namespace {
     ggml_tensor* require(const GgufModel& model, const std::string& name) {
         ggml_tensor* t = model.weight(name);
         if (!t) {
-            throw std::runtime_error("VITS 缺失权重: " + name);
+            throw std::runtime_error("VITS missing weight: " + name);
         }
         return t;
     }
 
-    // WN（WaveNet 残差块，dilation_rate=1）：x [H,T] -> [H,T]
+    // WN (WaveNet residual block, dilation_rate=1): x [H,T] -> [H,T]
     ggml_tensor* build_wn(ggml_context* ctx, const GgufModel& model, const Config& cfg,
         ggml_tensor* x, ggml_tensor* g, const std::string& prefix) {
         const int64_t H = cfg.hidden_channels;
@@ -35,7 +35,7 @@ namespace {
             const std::string lp = prefix + ".in_layers." + std::to_string(i);
             const std::string rp = prefix + ".res_skip_layers." + std::to_string(i);
             ggml_tensor* w = require(model, lp + ".weight");
-            // x 为 [C,T] 布局，通道数在 ne[0]
+            // x uses the [C,T] layout, channel count is in ne[0]
             const int64_t kernel = cfg.conv_flat ? w->ne[0] / x->ne[0] : w->ne[0];
             const int64_t padding = (kernel - 1) / 2;   // dilation = 1
 
@@ -45,7 +45,7 @@ namespace {
             g_l = ggml_repeat(ctx, g_l, x_in);
             ggml_tensor* acts = add_checked(ctx, x_in, g_l);
 
-            // 融合门：left=tanh, right=sigmoid
+            // Fusion gate: left=tanh, right=sigmoid
             ggml_tensor* left = ggml_tanh(ctx, slice_channels(ctx, acts, 0, H));
             ggml_tensor* right = ggml_sigmoid(ctx, slice_channels(ctx, acts, H, H));
             acts = mul_checked(ctx, left, right);
@@ -54,7 +54,7 @@ namespace {
             ggml_tensor* rs = conv1d_ct(ctx, acts, require(model, rp + ".weight"),
                 require(model, rp + ".bias"), 1, 0, 1, cfg.conv_flat);
             if (rs->ne[0] != rs_channels) {
-                throw std::runtime_error("VITS flow res_skip 通道数异常");
+                throw std::runtime_error("VITS flow res_skip channel count mismatch");
             }
             if (i < n_layers - 1) {
                 x = add_checked(ctx, x, ggml_cont(ctx, slice_channels(ctx, rs, 0, H)));
@@ -68,7 +68,7 @@ namespace {
         return output;
     }
 
-    // 残差耦合逆变换（mean_only=True）
+    // Residual coupling inverse transform (mean_only=True)
     ggml_tensor* coupling_reverse(ggml_context* ctx, const GgufModel& model,
         const Config& cfg, ggml_tensor* x, ggml_tensor* g, int64_t flow_index) {
         const int64_t half = cfg.inter_channels / 2;
@@ -94,7 +94,7 @@ ggml_tensor* build_flow_reverse(ggml_context* ctx, const GgufModel& model,
     ggml_tensor* z = z_p;
     const int64_t order[4] = { 6, 4, 2, 0 };
     for (int64_t k : order) {
-        // 通道翻转（用置换矩阵实现）
+        // Channel flip (implemented with a permutation matrix)
         z = ggml_mul_mat(ctx, flip_matrix, z);
         z = coupling_reverse(ctx, model, cfg, z, g, k);
     }

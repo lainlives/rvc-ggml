@@ -1,4 +1,4 @@
-// RVC-Train-GGML - M7-2 从零随机初始化实现（src/model/scratch.cpp）
+// RVC-Train-GGML - M7-2 random init from scratch implementation (src/model/scratch.cpp)
 #include "model/scratch.h"
 
 #include <cmath>
@@ -15,13 +15,13 @@ int64_t ne_elems(const std::array<int64_t, 4>& ne) {
     return ne[0] * ne[1] * ne[2] * ne[3];
 }
 
-// fan_in = 元素数 / 输出维（ch_dim 维）
+// fan_in = number of elements / output dim (the ch_dim dim)
 int64_t fan_in_of(const std::array<int64_t, 4>& ne, int ch_dim) {
     const int64_t denom = ne[ch_dim];
     return denom > 0 ? ne_elems(ne) / denom : 1;
 }
 
-// weight_g 形状：v 的 ch_dim 维保留，其余置 1
+// weight_g shape: keep v's ch_dim dim, set the rest to 1
 std::array<int64_t, 4> wn_g_ne(const std::array<int64_t, 4>& vne, int ch_dim) {
     std::array<int64_t, 4> g{1, 1, 1, 1};
     g[ch_dim] = vne[ch_dim];
@@ -41,7 +41,7 @@ struct Builder {
         v->push_back(std::move(s));
     }
 
-    // 普通 Conv/Linear 权重（kaiming，fan_in 由形状推导）；ch_dim 为输出维
+    // Plain Conv/Linear weight (kaiming, fan_in derived from the shape); ch_dim is the output dim
     void weight(const std::string& name, std::array<int64_t, 4> ne, int ch_dim) {
         TensorSpec s;
         s.name = name;
@@ -51,7 +51,7 @@ struct Builder {
         s.ch_dim = ch_dim;
         v->push_back(std::move(s));
     }
-    // weight_norm：配对 weight_g + weight_v（Kaiming），bias
+    // weight_norm: paired weight_g + weight_v (Kaiming), bias
     void wn(const std::string& base, std::array<int64_t, 4> vne, int ch_dim, bool with_bias,
             int64_t out_ch) {
         TensorSpec g;
@@ -104,7 +104,7 @@ struct Builder {
 bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "build_g_specs: out 为空";
+            *err = "build_g_specs: out is null";
         }
         return false;
     }
@@ -125,7 +125,7 @@ bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
     const int64_t gin     = mc.gin_channels;
     const int64_t in_feat = mc.is_v2() ? 768 : 256;
 
-    // ---------------- enc_p（TextEncoder）----------------
+    // ---------------- enc_p (TextEncoder) ----------------
     b.linear("enc_p.emb_phone", in_feat, hidden, true);
     b.embedding("enc_p.emb_pitch", 256, hidden);
     for (int64_t i = 0; i < nlayers; ++i) {
@@ -157,7 +157,7 @@ bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
         b.conv("enc_p.proj", pne, 2, true, 2 * inter);
     }
 
-    // ---------------- enc_q（PosteriorEncoder；n_layers 固定 16）----------------
+    // ---------------- enc_q (PosteriorEncoder; n_layers fixed at 16) ----------------
     const int64_t encq_layers = 16;
     {
         std::array<int64_t, 4> pre{1, mc.spec_channels, hidden, 1};
@@ -183,7 +183,7 @@ bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
         b.conv("enc_q.proj", pne, 2, true, 2 * inter);
     }
 
-    // ---------------- flow（ResidualCouplingBlock；4 层索引 0/2/4/6；n_layers 固定 3）----------------
+    // ---------------- flow (ResidualCouplingBlock; 4 layers at indices 0/2/4/6; n_layers fixed at 3) ----------------
     const int64_t flow_layers = 3;
     for (int64_t f = 0; f < 4; ++f) {
         const std::string fb = "flow.flows." + std::to_string((long long) (f * 2));
@@ -202,10 +202,10 @@ bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
         b.conv(fb + ".post", {1, hidden, inter / 2, 1}, 2, true, inter / 2);
     }
 
-    // ---------------- dec（GeneratorNSF）----------------
+    // ---------------- dec (GeneratorNSF) ----------------
     const int64_t initial = mc.upsample_initial_channel;
     const int64_t n_up = (int64_t) mc.upsample_rates.size();
-    b.linear("dec.m_source.l_linear", 1, 1, true);  // harmonic_num = 0 → (1,1)
+    b.linear("dec.m_source.l_linear", 1, 1, true);  // harmonic_num = 0 -> (1,1)
     b.conv("dec.conv_pre", {7, inter, initial, 1}, 2, true, initial);
     b.conv("dec.cond", {1, gin, initial, 1}, 2, true, initial);
     for (int64_t i = 0; i < n_up; ++i) {
@@ -242,7 +242,7 @@ bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
     const int64_t ch_last = initial >> n_up;
     b.conv("dec.conv_post", {7, ch_last, 1, 1}, 2, false, 1);
 
-    // ---------------- emb_g（SpeakerEmbedding）----------------
+    // ---------------- emb_g (SpeakerEmbedding) ----------------
     b.embedding("emb_g", mc.spk_embed_dim, gin);
 
     return true;
@@ -251,7 +251,7 @@ bool build_g_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
 bool build_d_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "build_d_specs: out 为空";
+            *err = "build_d_specs: out is null";
         }
         return false;
     }
@@ -260,14 +260,14 @@ bool build_d_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
     }
     if (mc.d_periods.empty()) {
         if (err != nullptr) {
-            *err = "D 配置缺少 d_periods";
+            *err = "D config is missing d_periods";
         }
         return false;
     }
     out->clear();
     Builder b{out};
 
-    // discriminators.0 = DiscriminatorS（Conv1d，groups 4/16/64/256）
+    // discriminators.0 = DiscriminatorS (Conv1d, groups 4/16/64/256)
     {
         const std::string s = "discriminators.0";
         // (out,in,k,groups)
@@ -283,7 +283,7 @@ bool build_d_specs(const ModelConfig& mc, std::vector<TensorSpec>* out, std::str
         b.wn(s + ".conv_post", {3, 1024, 1, 1}, 2, true, 1);
     }
 
-    // discriminators.{1..N} = DiscriminatorP（Conv2d，kernel (5,1)）
+    // discriminators.{1..N} = DiscriminatorP (Conv2d, kernel (5,1))
     const int64_t P = (int64_t) mc.d_periods.size();
     for (int64_t p = 1; p <= P; ++p) {
         const std::string s = "discriminators." + std::to_string((long long) p);
@@ -304,7 +304,7 @@ bool fill_specs(const std::vector<TensorSpec>& specs, uint64_t seed,
                 std::vector<std::vector<float>>* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "fill_specs: out 为空";
+            *err = "fill_specs: out is null";
         }
         return false;
     }
@@ -314,7 +314,7 @@ bool fill_specs(const std::vector<TensorSpec>& specs, uint64_t seed,
     for (size_t i = 0; i < specs.size(); ++i) {
         const TensorSpec& s = specs[i];
         if (s.init == InitKind::WnG) {
-            continue;  // 二遍处理
+            continue;  // handled in the second pass
         }
         std::vector<float>& d = (*out)[i];
         d.resize((size_t) ne_elems(s.ne));
@@ -367,7 +367,7 @@ bool fill_specs(const std::vector<TensorSpec>& specs, uint64_t seed,
         }
     }
 
-    // 二遍：weight_g = ‖weight_v‖（对除最后一维外的所有维求和）
+    // Second pass: weight_g = ‖weight_v‖ (sum over all dims except the last)
     std::unordered_map<std::string, size_t> by_name;
     for (size_t i = 0; i < specs.size(); ++i) {
         by_name[specs[i].name] = i;
@@ -381,7 +381,7 @@ bool fill_specs(const std::vector<TensorSpec>& specs, uint64_t seed,
         if (s.name.size() <= suffix.size() ||
             s.name.compare(s.name.size() - suffix.size(), suffix.size(), suffix) != 0) {
             if (err != nullptr) {
-                *err = "WnG 名称非法: " + s.name;
+                *err = "invalid WnG name: " + s.name;
             }
             return false;
         }
@@ -389,7 +389,7 @@ bool fill_specs(const std::vector<TensorSpec>& specs, uint64_t seed,
         const auto it = by_name.find(vname);
         if (it == by_name.end()) {
             if (err != nullptr) {
-                *err = "WnG 缺少配对 weight_v: " + s.name;
+                *err = "WnG is missing the paired weight_v: " + s.name;
             }
             return false;
         }
@@ -398,11 +398,11 @@ bool fill_specs(const std::vector<TensorSpec>& specs, uint64_t seed,
         const int ch = vs.ch_dim;
         const int64_t out_ch = vs.ne[ch];
         std::vector<double> acc((size_t) out_ch, 0.0);
-        // ne 行主序解码：遍历全部元素，累加到对应通道
+        // ne row-major decoding: iterate over all elements, accumulating into the corresponding channel
         int64_t idx[4] = {0, 0, 0, 0};
         const int64_t total = (int64_t) vd.size();
         for (int64_t lin = 0; lin < total; ++lin) {
-            // 解码 lin → idx（ggml ne 行主序：dim0 最内层）
+            // Decode lin -> idx (ggml ne row-major: dim0 is innermost)
             int64_t rem = lin;
             for (int d = 0; d < 4; ++d) {
                 idx[d] = vs.ne[d] > 0 ? rem % vs.ne[d] : 0;

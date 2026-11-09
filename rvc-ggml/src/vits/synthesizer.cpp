@@ -1,6 +1,6 @@
 // synthesizer.cpp
-// VITS 合成器编排：读取 GGUF 元数据/权重，构建静态图（enc_p -> flow -> dec），
-// 分配缓冲并执行；相同 (frames, feature_dim, sid) 复用图。
+// VITS synthesizer orchestration: read GGUF metadata/weights, build a static graph (enc_p -> flow -> dec),
+// allocate buffers and execute; the same (frames, feature_dim, sid) reuses the graph.
 
 #include "vits/synthesizer.h"
 
@@ -25,25 +25,25 @@ namespace {
         return out;
     }
 
-    // 逐元素：输入特征 [T,C_in] 行主序
+    // Per-element: input features [T,C_in] row-major
     void check_input(const Config& cfg, const Input& in) {
         if (in.frames <= 0 || in.feature_dim <= 0) {
-            throw std::runtime_error("VITS 输入帧数/维度非法");
+            throw std::runtime_error("VITS input frame count/dimension is invalid");
         }
         const size_t feat = static_cast<size_t>(in.frames) * in.feature_dim;
         if (in.features.size() != feat) {
-            throw std::runtime_error("VITS features 尺寸不匹配");
+            throw std::runtime_error("VITS features size mismatch");
         }
         const size_t noise = static_cast<size_t>(in.frames) * cfg.inter_channels;
         if (in.noise.size() != noise) {
-            throw std::runtime_error("VITS noise 尺寸不匹配");
+            throw std::runtime_error("VITS noise size mismatch");
         }
         if (cfg.has_f0) {
             if (static_cast<int64_t>(in.pitch.size()) != in.frames) {
-                throw std::runtime_error("VITS pitch 尺寸不匹配");
+                throw std::runtime_error("VITS pitch size mismatch");
             }
             if (static_cast<int64_t>(in.source.size()) != in.frames * cfg.hop_samples) {
-                throw std::runtime_error("VITS source(sine) 尺寸不匹配");
+                throw std::runtime_error("VITS source(sine) size mismatch");
             }
         }
     }
@@ -72,21 +72,21 @@ Config read_config(const GgufModel& model) {
     cfg.conv_flat = model.meta_bool("rvc.conv_flat", false);
 
     if (cfg.upsample_rates.empty() || cfg.upsample_kernel_sizes.size() != cfg.upsample_rates.size()) {
-        throw std::runtime_error("VITS 元数据缺失 upsample_rates/kernel_sizes（需用当前 export_gguf.py 重导）");
+        throw std::runtime_error("VITS metadata is missing upsample_rates/kernel_sizes (re-export with the current export_gguf.py)");
     }
     cfg.hop_samples = 1;
     for (int r : cfg.upsample_rates) {
         cfg.hop_samples *= r;
     }
 
-    // flow WN 层数从权重探测（不同训练版本可能不同）
+    // flow WN layer count detected from weights (may differ between training versions)
     int flow_layers = 0;
     while (model.has_weight("flow.flows.0.enc.in_layers." +
         std::to_string(flow_layers) + ".weight")) {
         ++flow_layers;
     }
     if (flow_layers == 0) {
-        throw std::runtime_error("VITS 缺少 flow 权重（flow.flows.0.enc.in_layers.*）");
+        throw std::runtime_error("VITS is missing flow weights (flow.flows.0.enc.in_layers.*)");
     }
     cfg.flow_n_layers = flow_layers;
     return cfg;
@@ -128,13 +128,13 @@ void Synthesizer::build(int64_t frames, int feature_dim, int speaker_id) {
         in_source_ = nullptr;
     }
 
-    // 说话人嵌入 g = emb_g[sid]；sid 常量张量
+    // Speaker embedding g = emb_g[sid]; sid is a constant tensor
     ggml_tensor* in_sid = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
     ggml_set_name(in_sid, "vits.sid");
     ggml_set_input(in_sid);
     ggml_tensor* g = get_rows(ctx, model_.weight("emb_g.weight"), in_sid);   // [gin,1]
 
-    // 通道翻转矩阵（flow 使用）
+    // Channel flip matrix (used by flow)
     ggml_tensor* flip = make_const_f32(ctx, inter, inter, "vits.flip");
     {
         std::vector<float> p(static_cast<size_t>(inter * inter), 0.0f);
@@ -159,13 +159,13 @@ void Synthesizer::build(int64_t frames, int feature_dim, int speaker_id) {
     }
 
     if (!runner_->allocate()) {
-        throw std::runtime_error("VITS 计算图缓冲分配失败");
+        throw std::runtime_error("VITS compute graph buffer allocation failed");
     }
-    Logger::info("VITS 图: 帧=" + std::to_string(frames) +
-        " 节点=" + std::to_string(runner_->node_count()) +
-        " 缓冲=" + std::to_string(runner_->buffer_size() / (1024 * 1024)) + " MiB");
+    Logger::info("VITS graph: frames=" + std::to_string(frames) +
+        " nodes=" + std::to_string(runner_->node_count()) +
+        " buffer=" + std::to_string(runner_->buffer_size() / (1024 * 1024)) + " MiB");
 
-    // 常量与 sid 只写一次
+    // Write constants and sid only once
     for (auto& c : constants_) {
         runner_->set_input(c.tensor, c.values.data(), c.values.size() * sizeof(float));
     }
@@ -202,7 +202,7 @@ Output Synthesizer::infer(const Input& input) {
     out.samples = static_cast<int64_t>(ggml_nelements(out_audio_));
     runner_->get_output_vec(out_audio_, out.audio);
 
-    // [C,T] 内存 -> [T,C] 行主序
+    // [C,T] memory -> [T,C] row-major
     auto read_transposed = [&](ggml_tensor* t, std::vector<float>& dst) {
         std::vector<float> raw;
         runner_->get_output_vec(t, raw);

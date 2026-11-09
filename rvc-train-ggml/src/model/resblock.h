@@ -1,9 +1,9 @@
-// RVC-Train-GGML - ResBlock1（src/model/resblock.h）
+// RVC-Train-GGML - ResBlock1 (src/model/resblock.h)
 //
-// 对应运行时 `infer_pack/modules.py:252-366` 的 `ResBlock1`：
-//   每对 (convs1[i], convs2[i])：LeakyReLU(0.1) →（乘 mask）→ conv1（膨胀）→
-//   LeakyReLU(0.1) →（乘 mask）→ conv2（膨胀 1）→ 残差相加；最后乘 mask。
-// 权重为 weight_norm（训练态 GGUF 里的 weight_g/weight_v，不折叠）。
+// Corresponds to runtime `infer_pack/modules.py:252-366` `ResBlock1`:
+//   for each pair (convs1[i], convs2[i]): LeakyReLU(0.1) -> (mask multiply) -> conv1 (dilated) ->
+//   LeakyReLU(0.1) -> (mask multiply) -> conv2 (dilation 1) -> residual add; finally multiply by mask.
+// Weights use weight_norm (weight_g/weight_v in the training-state GGUF, not folded).
 #pragma once
 
 #include "model/model.h"
@@ -18,10 +18,10 @@ namespace rvc_train {
 namespace model {
 
 struct ResBlock1Config {
-    std::string prefix;                // 如 "dec.resblocks.0"
+    std::string prefix;                // e.g. "dec.resblocks.0"
     int64_t channels = 0;
     int64_t kernel_size = 3;
-    std::vector<int64_t> dilations;    // 长度 3，如 {1,3,5}
+    std::vector<int64_t> dilations;    // length 3, e.g. {1,3,5}
 };
 
 struct ResBlock1Module {
@@ -32,16 +32,16 @@ struct ResBlock1Module {
     std::vector<traincpp::Conv1d> c2;
 };
 
-// 按前缀取参数并装配（只做结构，不装载数据；张量名保持 GGUF 原名不变）。
+// Fetch parameters by prefix and assemble (structure only, no data loading; tensor names keep their original GGUF names).
 bool resblock1_load(const ModelParams& params, const ResBlock1Config& cfg, ResBlock1Module* out,
                     std::string* err);
 
-// 前向捕获（对拍用；不需要时传 nullptr）
+// Forward captures (for comparison; pass nullptr if not needed)
 struct ResBlock1Captures {
-    traincpp::Tensor* t0 = nullptr;    // 第 0 对 convs1 的输出
+    traincpp::Tensor* t0 = nullptr;    // output of convs1 for pair 0
 };
 
-// x=[T,C,B]，x_mask=[T,1,B]（可为 nullptr）；输出 [T,C,B]
+// x=[T,C,B], x_mask=[T,1,B] (may be nullptr); output [T,C,B]
 traincpp::Tensor* resblock1_forward(traincpp::Context* ctx, const ResBlock1Module& rb,
                                     traincpp::Tensor* x, traincpp::Tensor* x_mask,
                                     ResBlock1Captures* caps = nullptr);

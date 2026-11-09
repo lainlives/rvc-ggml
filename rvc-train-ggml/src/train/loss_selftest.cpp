@@ -1,10 +1,10 @@
-// RVC-Train-GGML - M3-2 损失/前端 golden 对拍实现（src/train/loss_selftest.cpp）
+// RVC-Train-GGML - M3-2 loss/frontend golden comparison-test implementation (src/train/loss_selftest.cpp)
 //
-// 结构仿 M3-1 反向对拍（src/model/selftest.cpp::run_single_backward）：
-//   读 manifest.loss.<module>.json → 建输入叶子（F32 标记可训练）→ 建图
-//   （stft/mel：输出 + 固定 cotangent VJP；损失模块：标量 loss 直接 set_loss）
-//   → graph_build_backward_expand（分配前）→ 分配 → 注入 → 填常量 → compute
-//   → 前向/损失/梯度逐项对比。
+// Structure mirrors the M3-1 backward comparison test (src/model/selftest.cpp::run_single_backward):
+//   read manifest.loss.<module>.json -> build input leaves (F32 flagged trainable) -> build graph
+//   (stft/mel: output + fixed cotangent VJP; loss modules: scalar loss with set_loss directly)
+//   -> graph_build_backward_expand (before allocation) -> allocate -> inject -> fill constants -> compute
+//   -> compare forward/loss/gradient item by item.
 #include "train/loss_selftest.h"
 
 #include "common/json.h"
@@ -36,7 +36,7 @@ constexpr double kLossTol = 1e-4;
 constexpr double kBackTol = 1e-3;
 constexpr double kBackRmsTol = 2e-3;
 
-// ---------------------------------------------------------------- 小工具
+// ---------------------------------------------------------------- helpers
 
 std::string join_path(const std::string& dir, const std::string& file) {
     std::string d = dir;
@@ -50,7 +50,7 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法打开文件: " + path;
+            *err = "cannot open file: " + path;
         }
         return false;
     }
@@ -112,7 +112,7 @@ bool fill_tensor_from_file(traincpp::Tensor* t, const std::string& dir, const Go
     const size_t expect = (size_t) traincpp::tensor_nelements(t) * traincpp::tensor_element_size(t);
     if (bytes.size() != expect) {
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "文件大小不符: %s（%zu != %zu）", gt.file.c_str(),
+        std::snprintf(buf, sizeof(buf), "file size mismatch: %s (%zu != %zu)", gt.file.c_str(),
                       bytes.size(), expect);
         if (err != nullptr) {
             *err = buf;
@@ -132,7 +132,7 @@ bool set_inputs(const GoldenManifest& gm, const std::map<std::string, traincpp::
         auto it = inputs.find(gt.name);
         if (it == inputs.end() || it->second == nullptr) {
             if (err != nullptr) {
-                *err = "输入张量未创建: " + gt.name;
+                *err = "input tensor not created: " + gt.name;
             }
             return false;
         }
@@ -162,17 +162,17 @@ bool is_no_grad(const GoldenManifest& gm, const std::string& name) {
     return false;
 }
 
-// ---------------------------------------------------------------- 建图接口
+// ---------------------------------------------------------------- graph-building interface
 
 struct LossBuildIO {
     traincpp::Context* ctx = nullptr;
     const GoldenManifest* golden = nullptr;
     std::map<std::string, traincpp::Tensor*> inputs;
-    std::vector<std::pair<std::string, traincpp::Tensor*>> compares;  // 前向输出（VJP 用）
-    traincpp::Tensor* scalar_loss = nullptr;  // 标量损失模块直接提供
-    StftInternals stft_dbg;                   // stft/mel 中间量（调试）
+    std::vector<std::pair<std::string, traincpp::Tensor*>> compares;  // forward outputs (for VJP)
+    traincpp::Tensor* scalar_loss = nullptr;  // provided directly by scalar loss modules
+    StftInternals stft_dbg;                   // stft/mel intermediates (debug)
     bool stft_dbg_valid = false;
-    // 分配完成后、compute 之前调用（填 DFT 核/mel 滤波器组等常量）
+    // Called after allocation and before compute (fills constants such as the DFT kernel/mel filterbank)
     std::function<bool(std::string*)> fill_consts;
 
     traincpp::Tensor* find_input(const std::string& name) const {
@@ -186,13 +186,13 @@ struct LossBuildIO {
 
 using LossBuildFn = bool (*)(LossBuildIO& io, std::string* err);
 
-// ---------------------------------------------------------------- stft/mel 构建器
+// ---------------------------------------------------------------- stft/mel builders
 
 bool config_from_golden(const GoldenManifest& gm, StftMelConfig* cfg, std::string* err) {
     const common::JsonValue* p = &gm.params;
     if (!p->is_object()) {
         if (err != nullptr) {
-            *err = "manifest.params 缺失（STFT/mel 需要 n_fft/hop/win/n_mels/sr 等）";
+            *err = "manifest.params missing (STFT/mel needs n_fft/hop/win/n_mels/sr etc.)";
         }
         return false;
     }
@@ -225,7 +225,7 @@ bool build_loss_stft(LossBuildIO& io, std::string* err) {
     traincpp::Tensor* y = io.find_input("y");
     if (y == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: y";
+            *err = "missing golden input: y";
         }
         return false;
     }
@@ -235,7 +235,7 @@ bool build_loss_stft(LossBuildIO& io, std::string* err) {
     io.stft_dbg_valid = true;
     if (spec == nullptr) {
         if (err != nullptr) {
-            *err = "stft_forward 建图失败";
+            *err = "stft_forward graph build failed";
         }
         return false;
     }
@@ -255,7 +255,7 @@ bool build_loss_mel(LossBuildIO& io, std::string* err) {
     traincpp::Tensor* y = io.find_input("y");
     if (y == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: y";
+            *err = "missing golden input: y";
         }
         return false;
     }
@@ -264,7 +264,7 @@ bool build_loss_mel(LossBuildIO& io, std::string* err) {
     traincpp::Tensor* mel = mel_spectrogram_forward(io.ctx, c, cfg, y);
     if (mel == nullptr) {
         if (err != nullptr) {
-            *err = "mel_spectrogram_forward 建图失败";
+            *err = "mel_spectrogram_forward graph build failed";
         }
         return false;
     }
@@ -278,7 +278,7 @@ bool build_loss_mel(LossBuildIO& io, std::string* err) {
         if (basis_gt == nullptr) {
             return true;
         }
-        // 自研滤波器组 vs golden（librosa）逐元素校验
+        // Element-wise check of our filterbank vs golden (librosa)
         std::vector<uint8_t> ref;
         if (!read_file_bytes(join_path(dir, basis_gt->file), &ref, e)) {
             return false;
@@ -286,7 +286,7 @@ bool build_loss_mel(LossBuildIO& io, std::string* err) {
         const size_t n = (size_t) cfg.n_mels * (size_t) cfg.bins();
         if (ref.size() != n * sizeof(float)) {
             if (e != nullptr) {
-                *e = "mel_basis golden 大小不符";
+                *e = "mel_basis golden size mismatch";
             }
             return false;
         }
@@ -296,17 +296,17 @@ bool build_loss_mel(LossBuildIO& io, std::string* err) {
         CompareStat st;
         compare_f32(rp, gen.data(), (int64_t) n, &st);
         const bool ok = (st.max_abs <= 1e-6);
-        std::printf("[selftest-loss]   mel_basis(自研 vs librosa) max_abs=%.3e rel=%.3e %s\n",
+        std::printf("[selftest-loss]   mel_basis(ours vs librosa) max_abs=%.3e rel=%.3e %s\n",
                     st.max_abs, st.rel, ok ? "OK" : "FAIL");
         if (!ok && e != nullptr) {
-            *e = "mel_basis 自研滤波器组与 golden 不一致";
+            *e = "our mel_basis filterbank does not match golden";
         }
         return ok;
     };
     return true;
 }
 
-// ---------------------------------------------------------------- 损失模块构建器（M3-2c）
+// ---------------------------------------------------------------- loss-module builders (M3-2c)
 
 double golden_number(const GoldenManifest& gm, const char* key, double def) {
     const common::JsonValue* v = gm.params.find(key);
@@ -322,7 +322,7 @@ bool build_loss_lsgan_d(LossBuildIO& io, std::string* err) {
         traincpp::Tensor* g = io.find_input("dg" + std::to_string(i));
         if (r == nullptr || g == nullptr) {
             if (err != nullptr) {
-                *err = "缺少 golden 输入 dr/dg" + std::to_string(i);
+                *err = "missing golden input dr/dg" + std::to_string(i);
             }
             return false;
         }
@@ -340,7 +340,7 @@ bool build_loss_lsgan_g(LossBuildIO& io, std::string* err) {
         traincpp::Tensor* g = io.find_input("dg" + std::to_string(i));
         if (g == nullptr) {
             if (err != nullptr) {
-                *err = "缺少 golden 输入 dg" + std::to_string(i);
+                *err = "missing golden input dg" + std::to_string(i);
             }
             return false;
         }
@@ -356,7 +356,7 @@ bool build_loss_fmap(LossBuildIO& io, std::string* err) {
     io.golden->param_int_array("fmap_counts", &counts);
     if ((int64_t) counts.size() != n) {
         if (err != nullptr) {
-            *err = "manifest fmap_counts 与 n_disc 不一致";
+            *err = "manifest fmap_counts does not match n_disc";
         }
         return false;
     }
@@ -370,7 +370,7 @@ bool build_loss_fmap(LossBuildIO& io, std::string* err) {
             traincpp::Tensor* g = io.find_input(gname);
             if (r == nullptr || g == nullptr) {
                 if (err != nullptr) {
-                    *err = "缺少 golden 输入 " + rname + "/" + gname;
+                    *err = "missing golden input " + rname + "/" + gname;
                 }
                 return false;
             }
@@ -391,7 +391,7 @@ bool build_loss_kl(LossBuildIO& io, std::string* err) {
     if (z_p == nullptr || logs_q == nullptr || m_p == nullptr || logs_p == nullptr ||
         z_mask == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入 z_p/logs_q/m_p/logs_p/z_mask";
+            *err = "missing golden input z_p/logs_q/m_p/logs_p/z_mask";
         }
         return false;
     }
@@ -409,7 +409,7 @@ bool build_loss_mel_l1(LossBuildIO& io, std::string* err) {
     traincpp::Tensor* y_hat_mel = io.find_input("y_hat_mel");
     if (y_mel == nullptr || y_hat_mel == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入 y_mel/y_hat_mel";
+            *err = "missing golden input y_mel/y_hat_mel";
         }
         return false;
     }
@@ -422,14 +422,14 @@ bool build_loss_mel_l1(LossBuildIO& io, std::string* err) {
     return io.scalar_loss != nullptr;
 }
 
-// ---------------------------------------------------------------- 注册表
+// ---------------------------------------------------------------- registry
 
 struct Entry {
     const char* name;
     LossBuildFn build;
 };
 
-// 顺序即 cotangent 种子约定序号（与 tools/gen_golden_loss.py 的 MODULES 一致）
+// Order defines the cotangent-seed convention index (matches MODULES in tools/gen_golden_loss.py)
 const Entry k_entries[] = {
     {"stft", build_loss_stft},
     {"mel", build_loss_mel},
@@ -449,18 +449,18 @@ const Entry* find_entry(const std::string& module) {
     return nullptr;
 }
 
-// ---------------------------------------------------------------- 单模块流程
+// ---------------------------------------------------------------- single-module flow
 
 int run_single_loss(const std::string& golden_dir, const std::string& module,
                     traincpp::Device* dev) {
     using namespace traincpp;
     const Entry* entry = find_entry(module);
     if (entry == nullptr) {
-        std::printf("[selftest-loss] 未知模块: %s\n", module.c_str());
+        std::printf("[selftest-loss] unknown module: %s\n", module.c_str());
         return 2;
     }
     if (dev == nullptr) {
-        std::printf("[selftest-loss] 无可用设备\n");
+        std::printf("[selftest-loss] no usable device\n");
         return 2;
     }
 
@@ -474,7 +474,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
 
     Context* ctx = context_new((size_t) (16 << 20));
     if (ctx == nullptr) {
-        std::printf("[selftest-loss] context_new 失败\n");
+        std::printf("[selftest-loss] context_new failed\n");
         return 1;
     }
 
@@ -488,7 +488,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         const Type type = (gt.dtype == "i32") ? TYPE_I32 : TYPE_F32;
         Tensor* t = new_tensor_nd(ctx, type, gt.nd, gt.ne.data());
         if (t == nullptr) {
-            std::printf("[selftest-loss] 创建输入张量失败: %s\n", gt.name.c_str());
+            std::printf("[selftest-loss] failed to create input tensor: %s\n", gt.name.c_str());
             context_free(ctx);
             return 1;
         }
@@ -501,12 +501,12 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         }
     }
     if (!entry->build(io, &err)) {
-        std::printf("[selftest-loss] 建图失败: %s\n", err.c_str());
+        std::printf("[selftest-loss] graph build failed: %s\n", err.c_str());
         context_free(ctx);
         return 1;
     }
 
-    std::printf("[selftest-loss] 输入: ");
+    std::printf("[selftest-loss] inputs: ");
     for (const auto& kv : io.inputs) {
         std::printf("%s ne=[%lld,%lld,%lld]  ", kv.first.c_str(), (long long) kv.second->ne[0],
                     (long long) kv.second->ne[1], (long long) kv.second->ne[2]);
@@ -515,7 +515,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
 
     Graph* graph = graph_new(ctx);
     if (graph == nullptr) {
-        std::printf("[selftest-loss] graph_new 失败\n");
+        std::printf("[selftest-loss] graph_new failed\n");
         context_free(ctx);
         return 1;
     }
@@ -528,7 +528,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         context_free(ctx);
     };
 
-    // 损失：标量模块直接用；stft/mel 由输出 + cotangent 组装 VJP
+    // Loss: scalar modules are used directly; stft/mel assemble the VJP from the output + cotangent
     Tensor* loss = io.scalar_loss;
     std::vector<std::pair<const GoldenTensor*, Tensor*>> cots;
     if (loss == nullptr) {
@@ -544,31 +544,31 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
                 }
             }
             if (out_t == nullptr) {
-                std::printf("[selftest-loss] C++ 未提供 cotangent 目标张量: %s\n", gt.name.c_str());
+                std::printf("[selftest-loss] C++ did not provide the cotangent target tensor: %s\n", gt.name.c_str());
                 cleanup();
                 return 1;
             }
             if (!tensor_matches_ne(out_t, gt)) {
-                std::printf("[selftest-loss] cotangent 目标形状不符: %s\n", gt.name.c_str());
+                std::printf("[selftest-loss] cotangent target shape mismatch: %s\n", gt.name.c_str());
                 cleanup();
                 return 1;
             }
             Tensor* cot = new_tensor_nd(ctx, TYPE_F32, gt.nd, gt.ne.data());
             if (cot == nullptr) {
-                std::printf("[selftest-loss] cotangent 叶子创建失败: %s\n", gt.name.c_str());
+                std::printf("[selftest-loss] failed to create cotangent leaf: %s\n", gt.name.c_str());
                 cleanup();
                 return 1;
             }
             std::snprintf(cot->name, MAX_NAME, "cot:%s", gt.name.c_str());
             Tensor* term = sum(ctx, mul(ctx, out_t, cot));
             if (term == nullptr) {
-                std::printf("[selftest-loss] VJP 建图失败: %s\n", gt.name.c_str());
+                std::printf("[selftest-loss] VJP graph build failed: %s\n", gt.name.c_str());
                 cleanup();
                 return 1;
             }
             loss = (loss == nullptr) ? term : add(ctx, loss, term);
             if (loss == nullptr) {
-                std::printf("[selftest-loss] VJP 累加失败: %s\n", gt.name.c_str());
+                std::printf("[selftest-loss] VJP accumulation failed: %s\n", gt.name.c_str());
                 cleanup();
                 return 1;
             }
@@ -576,7 +576,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         }
     }
     if (loss == nullptr) {
-        std::printf("[selftest-loss] manifest 无 loss/cotangent 条目\n");
+        std::printf("[selftest-loss] manifest has no loss/cotangent entries\n");
         cleanup();
         return 1;
     }
@@ -587,12 +587,12 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
     graph_build_backward_expand(graph);
 
     const DeviceProps& dp = dev->props();
-    std::printf("[selftest-loss] backend = %s（%s）\n", dp.name.c_str(),
+    std::printf("[selftest-loss] backend = %s (%s)\n", dp.name.c_str(),
                 dp.type == DeviceType::CPU ? "CPU" : "GPU");
 
     buf = buffer_alloc_ctx_tensors(ctx, dev->default_buffer_type());
     if (buf == nullptr) {
-        std::printf("[selftest-loss] 计算缓冲分配失败（可用 RVCT_DEBUG_ALLOC=1 查看待分配总量）\n");
+        std::printf("[selftest-loss] compute buffer allocation failed (use RVCT_DEBUG_ALLOC=1 to see total pending allocation)\n");
         cleanup();
         return 1;
     }
@@ -603,30 +603,30 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
     }
     for (const auto& c : cots) {
         if (!fill_tensor_from_file(c.second, gm.dir, *c.first, &err)) {
-            std::printf("[selftest-loss] cotangent 注入失败: %s\n", err.c_str());
+            std::printf("[selftest-loss] cotangent injection failed: %s\n", err.c_str());
             cleanup();
             return 1;
         }
     }
     if (io.fill_consts && !io.fill_consts(&err)) {
-        std::printf("[selftest-loss] 常量填充失败: %s\n", err.c_str());
+        std::printf("[selftest-loss] constant fill failed: %s\n", err.c_str());
         cleanup();
         return 1;
     }
     const Tensor* unsupported = graph_first_unsupported(graph, dev);
     if (unsupported != nullptr) {
-        std::printf("[selftest-loss] 设备不支持节点: %s\n", unsupported->name);
+        std::printf("[selftest-loss] node not supported by device: %s\n", unsupported->name);
         cleanup();
         return 1;
     }
     graph_reset(graph);
     if (!dev->graph_compute(graph)) {
-        std::printf("[selftest-loss] graph_compute 失败\n");
+        std::printf("[selftest-loss] graph_compute failed\n");
         cleanup();
         return 1;
     }
 
-    // RVCT_DEBUG_LOSS=1：打印 stft/mel 中间量（定位用）
+    // RVCT_DEBUG_LOSS=1: print stft/mel intermediates (for localization)
     {
         char*  dbg_env = nullptr;
         size_t dbg_len = 0;
@@ -667,7 +667,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
     int n_checked = 0;
     int n_failed  = 0;
 
-    // 1) 前向输出（stft/mel）
+    // 1) forward outputs (stft/mel)
     for (const GoldenTensor& gt : gm.tensors) {
         if (gt.role != "output") {
             continue;
@@ -680,7 +680,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
             }
         }
         if (t == nullptr || !tensor_matches_ne(t, gt)) {
-            std::printf("[selftest-loss]   %-10s [FAIL] 输出缺失/形状不符\n", gt.name.c_str());
+            std::printf("[selftest-loss]   %-10s [FAIL] output missing/shape mismatch\n", gt.name.c_str());
             ++n_checked;
             ++n_failed;
             continue;
@@ -690,7 +690,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         std::vector<uint8_t> ref;
         tensor_get(t, got.data(), 0, nbytes);
         if (!read_file_bytes(join_path(gm.dir, gt.file), &ref, &err) || ref.size() != nbytes) {
-            std::printf("[selftest-loss]   %-10s [FAIL] golden 读取失败\n", gt.name.c_str());
+            std::printf("[selftest-loss]   %-10s [FAIL] golden read failed\n", gt.name.c_str());
             ++n_checked;
             ++n_failed;
             continue;
@@ -707,14 +707,14 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         }
     }
 
-    // 2) 损失标量
+    // 2) loss scalar
     for (const GoldenTensor& gt : gm.tensors) {
         if (gt.role != "loss") {
             continue;
         }
         std::vector<uint8_t> ref;
         if (!read_file_bytes(join_path(gm.dir, gt.file), &ref, &err) || ref.size() < sizeof(float)) {
-            std::printf("[selftest-loss]   loss       [FAIL] golden 读取失败\n");
+            std::printf("[selftest-loss]   loss       [FAIL] golden read failed\n");
             ++n_checked;
             ++n_failed;
             continue;
@@ -732,7 +732,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         }
     }
 
-    // 3) 输入梯度
+    // 3) input gradients
     for (const GoldenTensor& gt : gm.tensors) {
         if (gt.role != "grad") {
             continue;
@@ -741,13 +741,13 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         auto it = io.inputs.find(gt.name);
         Tensor* target = (it == io.inputs.end()) ? nullptr : it->second;
         if (target == nullptr || !tensor_matches_ne(target, gt)) {
-            std::printf("[selftest-loss]   %-28s [FAIL] 梯度目标缺失/形状不符\n", gt.name.c_str());
+            std::printf("[selftest-loss]   %-28s [FAIL] gradient target missing/shape mismatch\n", gt.name.c_str());
             ++n_failed;
             continue;
         }
         Tensor* grad = target->grad_acc;
         if (grad == nullptr) {
-            std::printf("[selftest-loss]   %-28s [FAIL] grad_acc=null（未参与反向）\n", gt.name.c_str());
+            std::printf("[selftest-loss]   %-28s [FAIL] grad_acc=null (did not participate in backward)\n", gt.name.c_str());
             ++n_failed;
             continue;
         }
@@ -756,7 +756,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
         std::vector<uint8_t> ref;
         tensor_get(grad, got.data(), 0, nbytes);
         if (!read_file_bytes(join_path(gm.dir, gt.file), &ref, &err) || ref.size() != nbytes) {
-            std::printf("[selftest-loss]   %-28s [FAIL] golden 读取失败\n", gt.name.c_str());
+            std::printf("[selftest-loss]   %-28s [FAIL] golden read failed\n", gt.name.c_str());
             ++n_failed;
             continue;
         }
@@ -773,7 +773,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
     }
 
     cleanup();
-    std::printf("[selftest-loss] %s: %d 项比较，%d 失败\n", module.c_str(), n_checked, n_failed);
+    std::printf("[selftest-loss] %s: %d items compared, %d failed\n", module.c_str(), n_checked, n_failed);
     return (n_failed == 0) ? 0 : 1;
 }
 

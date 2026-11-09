@@ -1,4 +1,4 @@
-// RVC-Train-GGML - ResBlock1 实现（src/model/resblock.cpp）
+// RVC-Train-GGML - ResBlock1 implementation (src/model/resblock.cpp)
 #include "model/resblock.h"
 
 #include <cstdio>
@@ -15,7 +15,7 @@ constexpr float kLeakySlope = 0.1f;
 Tensor* require_param(const ModelParams& params, const std::string& name, std::string* err) {
     Tensor* t = params.find(name.c_str());
     if (t == nullptr && err != nullptr) {
-        *err = "缺失参数: " + name;
+        *err = "missing parameter: " + name;
     }
     return t;
 }
@@ -40,13 +40,13 @@ bool resblock1_load(const ModelParams& params, const ResBlock1Config& cfg, ResBl
                     std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "ResBlock1 输出为空";
+            *err = "ResBlock1 output is null";
         }
         return false;
     }
     if (cfg.channels <= 0 || cfg.kernel_size <= 0 || cfg.dilations.size() != 3) {
         if (err != nullptr) {
-            *err = "ResBlock1 配置非法（channels/kernel > 0，dilations 长度必须为 3）";
+            *err = "invalid ResBlock1 config (channels/kernel > 0, dilations length must be 3)";
         }
         return false;
     }
@@ -97,11 +97,11 @@ bool resblock1_load(const ModelParams& params, const ResBlock1Config& cfg, ResBl
 Tensor* resblock1_forward(Context* ctx, const ResBlock1Module& rb, Tensor* x, Tensor* x_mask,
                           ResBlock1Captures* caps) {
     if (ctx == nullptr || x == nullptr) {
-        std::printf("[resblock1] 输入为空\n");
+        std::printf("[resblock1] null input\n");
         return nullptr;
     }
     if (x->ne[1] != rb.cfg.channels) {
-        std::printf("[resblock1] 输入通道 %lld != channels %lld\n", (long long) x->ne[1],
+        std::printf("[resblock1] input channels %lld != channels %lld\n", (long long) x->ne[1],
                     (long long) rb.cfg.channels);
         return nullptr;
     }

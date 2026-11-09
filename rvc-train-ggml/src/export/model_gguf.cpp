@@ -1,4 +1,4 @@
-// model_gguf.cpp —— M6 推理 GGUF 导出实现（见 model_gguf.h）
+// model_gguf.cpp -- M6 inference GGUF export implementation (see model_gguf.h)
 #include "export/model_gguf.h"
 
 #include "traincpp/traincpp.h"
@@ -30,7 +30,7 @@ bool ends_with(const std::string& s, const char* p) {
     return s.size() >= n && std::memcmp(s.data() + (s.size() - n), p, n) == 0;
 }
 
-// 推理子集：只保留 enc_p. / flow. / dec. / emb_g.
+// Inference subset: keep only enc_p. / flow. / dec. / emb_g.
 bool keep_tensor(const std::string& name) {
     return starts_with(name, "enc_p.") || starts_with(name, "flow.") ||
            starts_with(name, "dec.") || starts_with(name, "emb_g.");
@@ -56,10 +56,10 @@ std::string stem_of(const std::string& path) {
     return base;
 }
 
-// ---- 最小 GGUF 头解析：只取每个张量的真实 n_dims ----
-// train.cpp 的 GgufTensorInfo 不带 n_dims（其 Tensor 无此字段），而"是否展平"
-// 必须用真实维数判定（如 dec.conv_post.weight [1,I,K] 的输出通道=1，用 ne>1 推断会
-// 误判成 2D）。此处直接按 GGUF 规范扫描头部，跳过 KV 区后读 tensor info 的 n_dims。
+// ---- Minimal GGUF header parsing: read only each tensor's true n_dims ----
+// train.cpp's GgufTensorInfo does not carry n_dims (its Tensor has no such field), but "whether to flatten"
+// must be decided from the true rank (e.g. dec.conv_post.weight [1,I,K] has output channels=1; inferring from ne>1 would
+// misclassify it as 2D). Here we scan the header directly per the GGUF spec, skip the KV section, then read n_dims from tensor info.
 bool skip_gguf_value(std::ifstream& f, uint32_t type) {
     auto skip = [&](size_t n) -> bool {
         f.seekg((std::streamoff) n, std::ios::cur);
@@ -110,13 +110,13 @@ bool load_tensor_ndims(const std::string& path, std::unordered_map<std::string, 
                        std::string* err) {
     std::ifstream f(path, std::ios::binary);
     if (!f) {
-        *err = "无法打开源 GGUF: " + path;
+        *err = "cannot open source GGUF: " + path;
         return false;
     }
     char magic[4] = {0, 0, 0, 0};
     f.read(magic, 4);
     if (!f || std::memcmp(magic, "GGUF", 4) != 0) {
-        *err = "源文件不是 GGUF: " + path;
+        *err = "source file is not GGUF: " + path;
         return false;
     }
     uint32_t version = 0;
@@ -126,11 +126,11 @@ bool load_tensor_ndims(const std::string& path, std::unordered_map<std::string, 
     f.read((char*) &tensor_count, 8);
     f.read((char*) &kv_count, 8);
     if (!f) {
-        *err = "GGUF 头部损坏: " + path;
+        *err = "corrupt GGUF header: " + path;
         return false;
     }
     if (version < 2 || version > 3) {
-        *err = "不支持的 GGUF 版本: " + std::to_string(version);
+        *err = "unsupported GGUF version: " + std::to_string(version);
         return false;
     }
     for (uint64_t i = 0; i < kv_count; ++i) {
@@ -140,7 +140,7 @@ bool load_tensor_ndims(const std::string& path, std::unordered_map<std::string, 
         uint32_t vt = 0;
         f.read((char*) &vt, 4);
         if (!f || !skip_gguf_value(f, vt)) {
-            *err = "GGUF KV 区解析失败: " + path;
+            *err = "failed to parse GGUF KV section: " + path;
             return false;
         }
     }
@@ -160,7 +160,7 @@ bool load_tensor_ndims(const std::string& path, std::unordered_map<std::string, 
         f.read((char*) &ty, 4);
         f.read((char*) &off, 8);
         if (!f) {
-            *err = "GGUF tensor info 解析失败: " + path;
+            *err = "failed to parse GGUF tensor info: " + path;
             return false;
         }
         (void) ty;
@@ -170,17 +170,17 @@ bool load_tensor_ndims(const std::string& path, std::unordered_map<std::string, 
     return true;
 }
 
-// 读取源张量为 F32 主机数据（自动反量化）；返回 ggml ne、推断 ndim。
+// Read a source tensor as F32 host data (automatic dequantization); returns ggml ne and inferred ndim.
 bool get_tensor(const GgufFile* f, const std::string& name, std::vector<float>* data,
                 int64_t ne[4], int* ndim, std::string* err) {
     const int64_t idx = gguf_find_tensor(f, name.c_str());
     if (idx < 0) {
-        *err = "源 GGUF 缺少张量: " + name;
+        *err = "source GGUF is missing tensor: " + name;
         return false;
     }
     const GgufTensorInfo* info = gguf_tensor_info(f, idx);
     if (info == nullptr) {
-        *err = "张量信息损坏: " + name;
+        *err = "corrupt tensor info: " + name;
         return false;
     }
     for (int i = 0; i < 4; ++i) {
@@ -190,15 +190,15 @@ bool get_tensor(const GgufFile* f, const std::string& name, std::vector<float>* 
     const int64_t n = gguf_tensor_nelements(f, idx);
     data->resize((size_t) n);
     if (!gguf_tensor_to_f32(f, name.c_str(), data->data(), n)) {
-        *err = "读取张量数据失败: " + name;
+        *err = "failed to read tensor data: " + name;
         return false;
     }
     return true;
 }
 
-// 折叠 weight_norm（标准 PyTorch weight_norm(dim=0)）：
-//   v torch 形状 [O, ...]，g.numel()==O → w = v / clamp(‖v‖_rest, 1e-12) * g
-// 数据为 torch 行主序；输出与 v 同形（ggml ne 不变）。
+// Fold weight_norm (standard PyTorch weight_norm(dim=0)):
+//   v torch shape [O, ...], g.numel()==O -> w = v / clamp(‖v‖_rest, 1e-12) * g
+// Data is torch row-major; output has the same shape as v (ggml ne unchanged).
 bool fold_weight_norm(const std::vector<float>& v, const int64_t v_ne[4], int v_ndim,
                       const std::vector<float>& g, int64_t g_numel, std::vector<float>* out,
                       std::string* err) {
@@ -211,14 +211,14 @@ bool fold_weight_norm(const std::vector<float>& v, const int64_t v_ne[4], int v_
         total *= vshape[d];
     }
     if ((int64_t) v.size() != total) {
-        *err = "weight_norm 折叠：源张量元素数异常";
+        *err = "weight_norm folding: unexpected source tensor element count";
         return false;
     }
     const int64_t O = vshape[0];
     if (g_numel != O) {
         char buf[192];
         std::snprintf(buf, sizeof(buf),
-                      "weight_norm 折叠：暂不支持 fairseq dim=(0,1) 约定（g.numel=%lld, dim0=%lld）",
+                      "weight_norm folding: fairseq dim=(0,1) convention is not supported yet (g.numel=%lld, dim0=%lld)",
                       (long long) g_numel, (long long) O);
         *err = buf;
         return false;
@@ -245,8 +245,8 @@ bool fold_weight_norm(const std::vector<float>& v, const int64_t v_ne[4], int v_
     return true;
 }
 
-// Conv1d 权重展平：[O,I,K] → (O, I*K)（数据不变，仅 ne 变化）。
-// 规则与 export_gguf.py 一致：ndim==3 且名以 .weight 结尾且非 dec.ups.*。
+// Conv1d weight flattening: [O,I,K] -> (O, I*K) (data unchanged, only ne changes).
+// Same rule as export_gguf.py: ndim==3 and name ends with .weight and is not dec.ups.*.
 void maybe_flatten(const std::string& name, int ndim, const int64_t ne_in[4], int* out_ndim,
                    int64_t out_ne[4]) {
     for (int i = 0; i < 4; ++i) {
@@ -266,7 +266,7 @@ bool copy_str_meta(const GgufFile* src, GgufWriter* w, const char* dst, const ch
                    bool required, std::string* err) {
     if (!gguf_has_key(src, src_key)) {
         if (required) {
-            *err = std::string("源 GGUF 缺少元数据: ") + src_key;
+            *err = std::string("source GGUF is missing metadata: ") + src_key;
             return false;
         }
         return true;
@@ -280,7 +280,7 @@ bool copy_u32_meta(const GgufFile* src, GgufWriter* w, const char* dst, const ch
                    bool required, std::string* err) {
     if (!gguf_has_key(src, src_key)) {
         if (required) {
-            *err = std::string("源 GGUF 缺少元数据: ") + src_key;
+            *err = std::string("source GGUF is missing metadata: ") + src_key;
             return false;
         }
         return true;
@@ -293,7 +293,7 @@ bool copy_arr_i32_meta(const GgufFile* src, GgufWriter* w, const char* dst, cons
                        bool required, std::string* err) {
     if (!gguf_has_key(src, src_key)) {
         if (required) {
-            *err = std::string("源 GGUF 缺少元数据: ") + src_key;
+            *err = std::string("source GGUF is missing metadata: ") + src_key;
             return false;
         }
         return true;
@@ -301,7 +301,7 @@ bool copy_arr_i32_meta(const GgufFile* src, GgufWriter* w, const char* dst, cons
     int64_t n = 0;
     const int32_t* v = gguf_get_arr_i32(src, src_key, &n);
     if (v == nullptr) {
-        *err = std::string("元数据数组读取失败: ") + src_key;
+        *err = std::string("failed to read metadata array: ") + src_key;
         return false;
     }
     gguf_writer_set_arr_i32(w, dst, v, n);
@@ -318,7 +318,7 @@ bool gguf_read_tensor_ndims(const std::string& path, std::unordered_map<std::str
 bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
     if (opt.in_path.empty() || opt.out_path.empty()) {
         if (err != nullptr) {
-            *err = "输入/输出路径不能为空";
+            *err = "input/output paths must not be empty";
         }
         return false;
     }
@@ -326,7 +326,7 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
     GgufFile* src = gguf_open(opt.in_path.c_str(), /*load_data=*/true);
     if (src == nullptr) {
         if (err != nullptr) {
-            *err = "无法打开/解析源 GGUF: " + opt.in_path;
+            *err = "cannot open/parse source GGUF: " + opt.in_path;
         }
         return false;
     }
@@ -346,17 +346,17 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
         auto it = ndims.find(n);
         return it != ndims.end() ? it->second : fallback;
     };
-    // M7-4：实时快照/scratch 训练态 GGUF 会因尾部 1 维折叠丢失真实维数 → 用来源文件
-    // ndims==3 名单强制展平；并固定加入 RVC 架构中输出通道=1 的 Conv1d 权重
-    //（dec.conv_post；已核对 v1-40k 训练态 GGUF 仅此一处，v2 结构相同），
-    // 使独立 `--export-gguf` 对 scratch GGUF 也能正确展平。
+    // M7-4: live-snapshot/scratch training-state GGUF loses the true rank when a trailing 1-dim is folded -> use the source file's
+    // ndims==3 list to force flattening; also always add the Conv1d weights with output channels=1 in the RVC architecture
+    // (dec.conv_post; verified as the only such case in the v1-40k training-state GGUF; v2 has the same structure),
+    // so standalone `--export-gguf` also flattens scratch GGUFs correctly.
     std::unordered_set<std::string> force(opt.force_flatten.begin(), opt.force_flatten.end());
     force.insert("dec.conv_post.weight");
     force.insert("dec.conv_post.weight_v");
 
-    // 输出数据容器：no_alloc=false 让张量数据分配在 ctx arena 内（写端只记指针）。
+    // Output data container: no_alloc=false allocates tensor data inside the ctx arena (the writer only stores pointers).
     ContextParams cp;
-    cp.mem_size = 64 * 1024 * 1024;  // 不足时自动追加 arena
+    cp.mem_size = 64 * 1024 * 1024;  // arena grows automatically when insufficient
     cp.no_alloc = false;
     Context* ctx = context_new(cp);
 
@@ -366,12 +366,12 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
                         opt.general_name.empty() ? stem_of(opt.out_path).c_str()
                                                  : opt.general_name.c_str());
     gguf_writer_set_str(w, "general.description", "RVC inference model exported by RVC-Train-GGML");
-    gguf_writer_set_u32(w, "general.file_type", 0);  // 全 F32
+    gguf_writer_set_u32(w, "general.file_type", 0);  // all F32
 
     std::string e;
     bool ok = true;
 
-    // ---- 元数据：rvc.train.* → rvc.* ----
+    // ---- Metadata: rvc.train.* -> rvc.* ----
     ok = ok && copy_str_meta(src, w, "rvc.version", "rvc.train.version", true, &e);
     if (ok && gguf_has_key(src, "rvc.train.has_f0")) {
         gguf_writer_set_bool(w, "rvc.has_f0", gguf_get_bool(src, "rvc.train.has_f0"));
@@ -398,7 +398,7 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
     ok = ok && copy_u32_meta(src, w, "rvc.gin_channels", "rvc.train.gin_channels", true, &e);
     gguf_writer_set_bool(w, "rvc.conv_flat", true);
 
-    // n_spk / spk_embed_dim 以 emb_g.weight 实际形状为准（torch [dim, spk] → ne [spk, dim]）
+    // n_spk / spk_embed_dim follow the actual shape of emb_g.weight (torch [dim, spk] -> ne [spk, dim])
     int64_t emb_ne[4] = {1, 1, 1, 1};
     int emb_ndim = 0;
     {
@@ -420,7 +420,7 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
         gguf_writer_set_u32(w, "rvc.spk_embed_dim", spk_dim);
     }
 
-    // ---- 张量：按源顺序，跳过 weight_g（在 weight_v 处折叠）；enc_q/disc 已过滤 ----
+    // ---- Tensors: source order, skip weight_g (folded at weight_v); enc_q/disc already filtered ----
     int64_t n_out = 0;
     const int64_t count = gguf_tensor_count(src);
     for (int64_t i = 0; ok && i < count; ++i) {
@@ -433,7 +433,7 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
             continue;
         }
         if (ends_with(name, ".weight_g")) {
-            continue;  // 由 .weight_v 处折叠产出
+            continue;  // produced by folding at .weight_v
         }
 
         std::vector<float> out;
@@ -482,7 +482,7 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
             maybe_flatten(name, nd, ne, &out_ndim, out_ne);
         }
 
-        // 写出张量（数据已在 ctx arena；保持存活到 write 返回）
+        // Write tensor (data already in the ctx arena; keep alive until write returns)
         Tensor* t = new_tensor_nd(ctx, TYPE_F32, out_ndim, out_ne);
         std::memcpy(t->data, out.data(), out.size() * sizeof(float));
         tensor_set_name(t, "%s", out_name.c_str());
@@ -491,12 +491,12 @@ bool export_inference_gguf(const ModelExportOptions& opt, std::string* err) {
     }
 
     if (ok && !gguf_writer_write(w, opt.out_path.c_str())) {
-        e = "写出 GGUF 失败: " + opt.out_path;
+        e = "failed to write GGUF: " + opt.out_path;
         ok = false;
     }
 
     if (ok) {
-        std::printf("[export] 完成: %s -> %s（%lld 张量）\n", opt.in_path.c_str(),
+        std::printf("[export] done: %s -> %s (%lld tensors)\n", opt.in_path.c_str(),
                     opt.out_path.c_str(), (long long) n_out);
     } else if (err != nullptr) {
         *err = e;

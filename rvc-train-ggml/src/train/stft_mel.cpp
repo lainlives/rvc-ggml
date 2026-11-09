@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 可微 STFT / mel 前端实现（src/train/stft_mel.cpp）
+// RVC-Train-GGML - differentiable STFT / mel frontend implementation (src/train/stft_mel.cpp)
 #include "train/stft_mel.h"
 
 #include <cmath>
@@ -20,7 +20,7 @@ bool fail(std::string* err, const char* msg) {
     return false;
 }
 
-// ------------------------------------------------ librosa slaney mel 刻度（norm='slaney'）
+// ------------------------------------------------ librosa slaney mel scale (norm='slaney')
 
 double hz_to_mel_slaney(double f) {
     const double f_min = 0.0;
@@ -52,22 +52,22 @@ double mel_to_hz_slaney(double m) {
 
 bool StftMelConfig::validate(std::string* err) const {
     if (n_fft <= 0 || hop <= 0 || win <= 0) {
-        return fail(err, "n_fft/hop/win 必须为正");
+        return fail(err, "n_fft/hop/win must be positive");
     }
     if (n_fft % 2 != 0) {
-        return fail(err, "n_fft 必须为偶数（onesided STFT）");
+        return fail(err, "n_fft must be even (onesided STFT)");
     }
     if (win != n_fft) {
-        return fail(err, "当前仅支持 win == n_fft（官方 configs 均如此）");
+        return fail(err, "currently only win == n_fft is supported (true for all official configs)");
     }
     if (n_mels <= 0) {
-        return fail(err, "n_mels 必须为正");
+        return fail(err, "n_mels must be positive");
     }
     if (sr <= 0.0) {
-        return fail(err, "采样率必须为正");
+        return fail(err, "sample rate must be positive");
     }
     if (!(fmin >= 0.0) || !(fmax_eff() > fmin)) {
-        return fail(err, "mel 频率范围非法（需 0 <= fmin < fmax）");
+        return fail(err, "invalid mel frequency range (need 0 <= fmin < fmax)");
     }
     return true;
 }
@@ -112,7 +112,7 @@ void stft_mel_fill_dft_kernel(StftMelConsts* c, const StftMelConfig& cfg) {
     const int64_t N    = cfg.n_fft;
     const int64_t bins = cfg.bins();
     std::vector<float> k((size_t) (N * 2 * bins));
-    // periodic Hann（torch.hann_window(win) 默认 periodic=True）：0.5 - 0.5*cos(2πn/N)
+    // periodic Hann (torch.hann_window(win) defaults to periodic=True): 0.5 - 0.5*cos(2πn/N)
     for (int64_t n = 0; n < N; ++n) {
         const double w = 0.5 - 0.5 * std::cos(2.0 * kPi * (double) n / (double) N);
         for (int64_t b = 0; b < bins; ++b) {
@@ -204,7 +204,7 @@ traincpp::Tensor* stft_forward(traincpp::Context* ctx, const StftMelConsts& c,
     }
     const int64_t frames = conv->ne[0];
     const int64_t bins   = cfg.bins();
-    // 通道 [0,bins)=cos 支、[bins,2bins)=-sin 支；视图切开后 cont
+    // Channels [0,bins)=cos branch, [bins,2bins)=-sin branch; cont after splitting with views
     Tensor* re = cont(ctx, view_3d(ctx, conv, frames, bins, B, 0));
     Tensor* im = cont(ctx, view_3d(ctx, conv, frames, bins, B, (size_t) bins * conv->nb[1]));
     if (re == nullptr || im == nullptr) {
@@ -232,12 +232,12 @@ traincpp::Tensor* mel_spectrogram_forward(traincpp::Context* ctx, const StftMelC
     if (spec == nullptr) {
         return nullptr;
     }
-    // [frames,bins,B] → [bins,frames,B]（mul_mat 的 k 在 ne0）
+    // [frames,bins,B] -> [bins,frames,B] (mul_mat's k is in ne0)
     Tensor* spec_t = cont(ctx, transpose(ctx, spec));
     if (spec_t == nullptr) {
         return nullptr;
     }
-    // basis [bins,n_mels]（a） × spec_t [bins,frames,B]（b） → [n_mels,frames,B]
+    // basis [bins,n_mels] (a) × spec_t [bins,frames,B] (b) -> [n_mels,frames,B]
     Tensor* lin_t = mul_mat(ctx, c.mel_basis, spec_t);
     if (lin_t == nullptr) {
         return nullptr;

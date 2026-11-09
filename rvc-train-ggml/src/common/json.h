@@ -1,8 +1,8 @@
-// RVC-Train-GGML - 极简 JSON 解析（src/common/json.h）
+// RVC-Train-GGML - minimal JSON parser (src/common/json.h)
 //
-// 用途：读取 golden manifest.json（M2-2 起）与后续训练配置（M7）。
-// 不引入第三方依赖：只支持 JSON 标准子集（对象/数组/字符串/数字/布尔/null），
-// 字符串转义支持 \" \\ \/ \b \f \n \r \t \uXXXX（BMP，代理对不合并）。
+// Purpose: read golden manifest.json (since M2-2) and future training configs (M7).
+// No third-party dependencies: supports only the JSON standard subset (object/array/string/number/bool/null),
+// string escapes support \" \\ \/ \b \f \n \r \t \uXXXX (BMP, surrogate pairs not combined).
 #pragma once
 
 #include <cstdint>
@@ -32,11 +32,11 @@ public:
     int64_t     as_int(int64_t default_value = 0) const;
     const std::string& as_string() const;
 
-    size_t size() const;                             // Array/Object 元素数，其他返回 0
-    const JsonValue& at(size_t index) const;         // Array 下标（越界返回 Null）
-    const std::string& key_at(size_t index) const;   // Object 第 index 个键（越界返回空串）
-    const JsonValue& value_at(size_t index) const;   // Object 第 index 个值（越界返回 Null）
-    const JsonValue* find(const std::string& key) const;  // Object 查找（未找到 nullptr）
+    size_t size() const;                             // Array/Object element count, 0 otherwise
+    const JsonValue& at(size_t index) const;         // Array index (returns Null out of range)
+    const std::string& key_at(size_t index) const;   // Object key at index (returns empty string out of range)
+    const JsonValue& value_at(size_t index) const;   // Object value at index (returns Null out of range)
+    const JsonValue* find(const std::string& key) const;  // Object lookup (nullptr when not found)
 
 private:
     friend struct JsonParser;
@@ -49,7 +49,7 @@ private:
     std::vector<std::pair<std::string, JsonValue>> object_;
 };
 
-// 读取整个文件并解析（失败返回 false 并写入 err）
+// Read a whole file and parse it (returns false and writes err on failure)
 bool json_read_file(const std::string& path, JsonValue* out, std::string* err);
 
 } // namespace common

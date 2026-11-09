@@ -1,5 +1,5 @@
 // engine.cpp
-// 后端管理与通用图执行引擎实现。
+// Backend management and generic graph execution engine implementation.
 
 #include "engine.h"
 
@@ -50,19 +50,19 @@ GgmlDevice::GgmlDevice(int device_id) {
         if (device_id >= 0 && device_id < static_cast<int>(gpus.size())) {
             backend_ = ggml_backend_dev_init(gpus[device_id], nullptr);
             if (!backend_) {
-                Logger::warn("GPU 设备初始化失败，回退 CPU");
+                Logger::warn("GPU device initialization failed, falling back to CPU");
             }
         }
         else {
-            Logger::warn("GPU 设备 ID " + std::to_string(device_id) +
-                " 越界（可用 " + std::to_string(gpus.size()) + " 个），回退 CPU");
+            Logger::warn("GPU device ID " + std::to_string(device_id) +
+                " out of range (" + std::to_string(gpus.size()) + " available), falling back to CPU");
         }
     }
     if (!backend_) {
         ggml_backend_dev_t cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-        if (!cpu) throw std::runtime_error("无可用 CPU 后端");
+        if (!cpu) throw std::runtime_error("No CPU backend available");
         backend_ = ggml_backend_dev_init(cpu, nullptr);
-        if (!backend_) throw std::runtime_error("CPU 后端初始化失败");
+        if (!backend_) throw std::runtime_error("CPU backend initialization failed");
     }
     name_ = ggml_backend_name(backend_);
 }
@@ -79,12 +79,12 @@ GgmlGraphRunner::GgmlGraphRunner(ggml_backend_t backend, size_t ctx_mem_size, in
     ggml_init_params params = { ctx_mem_size, nullptr, true };
     ctx_ = ggml_init(params);
     if (!ctx_) {
-        throw std::runtime_error("ggml 上下文创建失败");
+        throw std::runtime_error("ggml context creation failed");
     }
     graph_ = ggml_new_graph_custom(ctx_, static_cast<size_t>(max_nodes), false);
     if (!graph_) {
         ggml_free(ctx_);
-        throw std::runtime_error("ggml 计算图创建失败");
+        throw std::runtime_error("ggml compute graph creation failed");
     }
 }
 
@@ -107,7 +107,7 @@ bool GgmlGraphRunner::allocate() {
     allocr_ = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend_));
     if (!allocr_) return false;
     if (!ggml_gallocr_reserve(allocr_, graph_)) {
-        Logger::warn("gallocr_reserve 失败，尝试直接分配");
+        Logger::warn("gallocr_reserve failed, trying direct allocation");
     }
     if (!ggml_gallocr_alloc_graph(allocr_, graph_)) {
         return false;
@@ -120,20 +120,20 @@ bool GgmlGraphRunner::allocate() {
 void GgmlGraphRunner::compute() {
     const enum ggml_status st = ggml_backend_graph_compute(backend_, graph_);
     if (st != GGML_STATUS_SUCCESS) {
-        throw std::runtime_error(std::string("GGML 计算失败: ") + ggml_status_to_string(st));
+        throw std::runtime_error(std::string("GGML compute failed: ") + ggml_status_to_string(st));
     }
 }
 
 void GgmlGraphRunner::set_input(ggml_tensor* t, const void* data, size_t size) {
     if (size != ggml_nbytes(t)) {
-        throw std::runtime_error(std::string("输入尺寸不匹配: ") + t->name);
+        throw std::runtime_error(std::string("Input size mismatch: ") + t->name);
     }
     ggml_backend_tensor_set(t, data, 0, size);
 }
 
 void GgmlGraphRunner::get_output(ggml_tensor* t, void* data, size_t size) const {
     if (size != ggml_nbytes(t)) {
-        throw std::runtime_error(std::string("输出尺寸不匹配: ") + t->name);
+        throw std::runtime_error(std::string("Output size mismatch: ") + t->name);
     }
     ggml_backend_tensor_get(t, data, 0, size);
 }

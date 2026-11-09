@@ -1,6 +1,6 @@
 // modules.h
-// ggml 神经网络算子封装：Conv1d/ConvTranspose1d/Linear/LayerNorm/GroupNorm/注意力等。
-// 供 HuBERT / RMVPE / VITS 三个图构建器共用。
+// ggml neural network operator wrappers: Conv1d/ConvTranspose1d/Linear/LayerNorm/GroupNorm/attention, etc.
+// Shared by the three graph builders HuBERT / RMVPE / VITS.
 
 #pragma once
 
@@ -17,7 +17,7 @@
 namespace rvc {
 namespace vits {
 
-    // 图构建上下文：持有 ggml_context/cgraph 生命周期，避免内存泄漏
+    // Graph build context: owns the ggml_context/cgraph lifetime to avoid memory leaks
     class GraphContext {
     public:
         GraphContext(size_t mem_size, size_t max_nodes);
@@ -28,7 +28,7 @@ namespace vits {
         ggml_context* ctx() const { return ctx_; }
         ggml_cgraph* graph() const { return graph_; }
 
-        // 创建一个可写输入张量（ne 按 ggml 顺序给）
+        // Create a writable input tensor (ne given in ggml order)
         ggml_tensor* make_input(ggml_type type, int n0, int n1 = 1, int n2 = 1, int n3 = 1,
             const char* name = nullptr);
 
@@ -38,72 +38,72 @@ namespace vits {
     };
 
     // ------------------------------------------------------------
-    // 常用算子（全部输出 F32，兼容量化权重）
+    // Common operators (all output F32, compatible with quantized weights)
     // ------------------------------------------------------------
 
-    // 一维滑动窗口（equiv. torch.nn.functional.pad(x,(n-1,0)).unfold(0,n,1)）
+    // 1D sliding window (equiv. torch.nn.functional.pad(x,(n-1,0)).unfold(0,n,1))
     ggml_tensor* sliding_window(ggml_context* ctx, ggml_tensor* x, int64_t n);
 
-    // LayerNorm（dim0 归一化），gamma/beta 为 [H]
+    // LayerNorm (normalized along dim0), gamma/beta are [H]
     ggml_tensor* layer_norm(ggml_context* ctx, ggml_tensor* x,
         ggml_tensor* gamma, ggml_tensor* beta, float eps);
 
-    // 线性层：x [K, T]（任意前置 batch 维）乘 W[K,N] + b[N]
+    // Linear layer: x [K, T] (any leading batch dims) times W[K,N] + b[N]
     ggml_tensor* linear(ggml_context* ctx, ggml_tensor* x, ggml_tensor* w, ggml_tensor* b);
 
-    // Conv1d：input [T, C, B]，weight [k, C_in, C_out]（已按 ggml 序导出）
-    // flat=true 时 weight 为展平布局 [C_in*K, C_out]（GGUF rvc.conv_flat，量化友好）：
-    //   内部用 im2col + mul_mat(权重作 src0) 实现，支持 q8_0/q5_1/q4_1/q4_0 等量化权重
+    // Conv1d: input [T, C, B], weight [k, C_in, C_out] (already exported in ggml order)
+    // flat=true: weight uses the flattened layout [C_in*K, C_out] (GGUF rvc.conv_flat, quantization-friendly):
+    //   implemented internally as im2col + mul_mat(weight as src0); supports q8_0/q5_1/q4_1/q4_0 and other quantized weights
     ggml_tensor* conv1d(ggml_context* ctx, ggml_tensor* input, ggml_tensor* weight,
         ggml_tensor* bias, int stride, int padding, int dilation, bool flat = false);
 
-    // 分组 Conv1d（ggml_conv_1d 不支持 groups；用 conv_2d 高度=1 退化实现）
-    //   input [T, C, B]，weight [k, C/groups, C_out]，输出 [T_out, C_out, B]
+    // Grouped Conv1d (ggml_conv_1d has no groups support; degenerate conv_2d with height=1)
+    //   input [T, C, B], weight [k, C/groups, C_out], output [T_out, C_out, B]
     ggml_tensor* conv1d_grouped(ggml_context* ctx, ggml_tensor* input, ggml_tensor* weight,
         ggml_tensor* bias, int groups, int stride, int padding, int dilation);
 
-    // GroupNorm（input [T, C, B]），w/b [C]
+    // GroupNorm (input [T, C, B]), w/b [C]
     ggml_tensor* group_norm(ggml_context* ctx, ggml_tensor* x,
         ggml_tensor* w, ggml_tensor* b, int n_groups, float eps);
 
-    // 取张量的行：embedding 查表（F32 表），idx 为 I32 一维
+    // Row lookup: embedding table lookup (F32 table), idx is a 1D I32 tensor
     ggml_tensor* get_rows(ggml_context* ctx, ggml_tensor* table, ggml_tensor* idx);
 
-    // 相对位置注意力的辅助：把相对 logits [frames, 2*frames-1, heads] 转为绝对 [frames, frames, heads]
+    // Relative-position attention helper: convert relative logits [frames, 2*frames-1, heads] to absolute [frames, frames, heads]
     ggml_tensor* relative_to_absolute(ggml_context* ctx, ggml_tensor* x, int64_t frames, int64_t heads, int64_t head_dim);
     ggml_tensor* absolute_to_relative(ggml_context* ctx, ggml_tensor* x, int64_t frames, int64_t heads, int64_t head_dim);
 
     // ------------------------------------------------------------
-    // VITS 专用辅助（[C,T] 布局：C 在 ne0，与线性/注意力一致）
+    // VITS-specific helpers ([C,T] layout: C in ne0, consistent with linear/attention)
     // ------------------------------------------------------------
 
-    // Conv1d：[C,T] 布局，内部转 [T,C] 后走 conv1d（flat 透传）
+    // Conv1d: [C,T] layout, internally transposed to [T,C] then routed to conv1d (flat passed through)
     ggml_tensor* conv1d_ct(ggml_context* ctx, ggml_tensor* x_ct, ggml_tensor* weight,
         ggml_tensor* bias, int stride, int padding, int dilation, bool flat = false);
 
-    // 1x1 卷积：等价于线性层，权重为 Conv1d 的 [1, K, N]（ggml 序）
+    // 1x1 convolution: equivalent to a linear layer; weight is Conv1d's [1, K, N] (ggml order)
     ggml_tensor* conv1x1_ct(ggml_context* ctx, ggml_tensor* x_ct, ggml_tensor* weight,
         ggml_tensor* bias);
 
-    // 通道切片（[C,T] -> [len,T]），返回视图（无 cont）
+    // Channel slice ([C,T] -> [len,T]), returns a view (no cont)
     ggml_tensor* slice_channels(ggml_context* ctx, ggml_tensor* x_ct, int64_t begin, int64_t len);
 
-    // 常量输入张量（构建期登记，分配到后端后由调用方写入一次）
+    // Constant input tensor (registered at build time; written once by the caller after backend allocation)
     ggml_tensor* make_const_f32(ggml_context* ctx, int64_t n0, int64_t n1,
         const char* name = nullptr);
 
-    // 确保张量为 F32（量化权重产生的 F16 计算走整数/快速路径，统一提升）
+    // Ensure the tensor is F32 (F16 computation from quantized weights takes the integer/fast path, so promote uniformly)
     ggml_tensor* to_f32(ggml_context* ctx, ggml_tensor* x);
 
-    // 带广播检查的乘/加（形状不兼容时抛出异常并打印双方维度）
+    // Multiply/add with broadcast checks (throws on incompatible shapes and prints both shapes)
     ggml_tensor* mul_checked(ggml_context* ctx, ggml_tensor* a, ggml_tensor* b);
     ggml_tensor* add_checked(ggml_context* ctx, ggml_tensor* a, ggml_tensor* b);
 
-    // 维度断言（用于图构建阶段定位维序错误）
+    // Dimension assertions (to locate dimension-order bugs during graph construction)
     void check_dim(const ggml_tensor* t, int64_t n0, int64_t n1, const char* where);
     void check_dim3(const ggml_tensor* t, int64_t n0, int64_t n1, int64_t n2, const char* where);
 
-    // permute + cont 的简写（axis 为目标 dim0..dim3 的源维序）
+    // Shorthand for permute + cont (axis = source dimension order for target dim0..dim3)
     ggml_tensor* permute_cont(ggml_context* ctx, ggml_tensor* x,
         int a0, int a1, int a2, int a3);
 

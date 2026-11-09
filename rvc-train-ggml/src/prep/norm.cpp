@@ -1,4 +1,4 @@
-// norm.cpp —— 官方 norm_write 数学复刻
+// norm.cpp -- official norm_write math replica
 
 #include "prep/norm.h"
 
@@ -7,14 +7,14 @@
 #include <cstddef>
 
 #include "prep/load.h"      // to_f32
-#include "prep/resample.h"  // resample_kaiser_best（16k 分支 resampy 仿真）
+#include "prep/resample.h"  // resample_kaiser_best (16k-branch resampy emulation)
 
 namespace rvc_train::prep {
 
 NormChunk normalize_chunk(const std::vector<double>& chunk, int target_sr, bool with_16k) {
     NormChunk out;
     if (chunk.empty()) {
-        return out;  // 官方空块会在 np.max 抛异常 → 视为无效
+        return out;  // an empty chunk raises at np.max in the official code -> treated as invalid
     }
 
     double tmp_max = 0.0;
@@ -30,15 +30,15 @@ NormChunk normalize_chunk(const std::vector<double>& chunk, int target_sr, bool 
     std::vector<double> scaled(chunk.size());
     out.gt.resize(chunk.size());
     for (std::size_t i = 0; i < chunk.size(); ++i) {
-        // 官方运算顺序：x / tmp_max * (max*alpha) + (1-alpha) * x
+        // official operation order: x / tmp_max * (max*alpha) + (1-alpha) * x
         scaled[i] = chunk[i] / tmp_max * (kMax * kAlpha) + (1.0 - kAlpha) * chunk[i];
         out.gt[i] = static_cast<float>(scaled[i]);
     }
     out.valid = true;
 
     if (with_16k) {
-        // 官方：librosa.resample(scaled, orig_sr, 16000).astype(np.float32)
-        // scaled 为 float64（scipy lfilter 输出），故 resampy kaiser_best 仿真用 double 输入/输出
+        // official: librosa.resample(scaled, orig_sr, 16000).astype(np.float32)
+        // scaled is float64 (scipy lfilter output), so the resampy kaiser_best emulation takes double input/output
         out.audio16k = to_f32(resample_kaiser_best(scaled, target_sr, 16000));
     }
     return out;

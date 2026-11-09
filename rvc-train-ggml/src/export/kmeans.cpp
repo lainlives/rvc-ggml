@@ -1,4 +1,4 @@
-// kmeans.cpp —— M4-5b 实现（见 kmeans.h 头注释）
+// kmeans.cpp -- M4-5b implementation (see the kmeans.h header comment)
 
 #include "export/kmeans.h"
 
@@ -33,7 +33,7 @@ int effective_threads(int requested, int64_t work) {
     return t;
 }
 
-// 简单并行 for：fn(begin, end, thread_index)；线程只在调用期间存在（工程规模足够）
+// Simple parallel for: fn(begin, end, thread_index); threads exist only during the call (sufficient for this project's scale)
 template <typename Fn>
 void parallel_for(int64_t n, int threads, Fn&& fn) {
     if (n <= 0) {
@@ -59,7 +59,7 @@ void parallel_for(int64_t n, int threads, Fn&& fn) {
     }
 }
 
-// 点积：8 路展开 + 尾处理（不依赖 /fp:fast，保持与顺序累加相同的数值路径族）
+// Dot product: 8-way unrolling + tail handling (does not rely on /fp:fast; keeps the same numerical path family as sequential accumulation)
 inline float dot_f32(const float* a, const float* b, int64_t dim) {
     float s = 0.0f;
     int64_t i = 0;
@@ -83,7 +83,7 @@ void compute_centroid_norms(const float* c, int64_t k, int64_t dim, std::vector<
     });
 }
 
-// 不重复随机采样 k 个行 id（Fisher-Yates 前 k 个；seed 可复现）
+// Sample k distinct row ids (first k of Fisher-Yates; reproducible via seed)
 void sample_distinct_rows(int64_t n, int64_t k, std::mt19937* rng, std::vector<int64_t>* out) {
     out->resize(static_cast<std::size_t>(n));
     std::iota(out->begin(), out->end(), int64_t{0});
@@ -137,8 +137,8 @@ bool kmeans_f32(const float* x, int64_t n, int64_t dim, int64_t k, const KMeansO
                 std::vector<float>* centroids, std::string* err) {
     if (x == nullptr || n <= 0 || dim <= 0 || k <= 0 || k > n) {
         if (err) {
-            *err = "kmeans 输入非法（n=" + std::to_string(n) + " dim=" + std::to_string(dim) +
-                   " k=" + std::to_string(k) + "）";
+            *err = "invalid kmeans input (n=" + std::to_string(n) + " dim=" + std::to_string(dim) +
+                   " k=" + std::to_string(k) + ")";
         }
         return false;
     }
@@ -146,7 +146,7 @@ bool kmeans_f32(const float* x, int64_t n, int64_t dim, int64_t k, const KMeansO
     const int threads = effective_threads(opt.threads, n);
     std::mt19937 rng(static_cast<uint32_t>(opt.seed));
 
-    // 初始化：随机采样 k 个不同点
+    // Initialization: randomly sample k distinct points
     std::vector<int64_t> sample;
     sample_distinct_rows(n, k, &rng, &sample);
     std::vector<float> c(static_cast<std::size_t>(k * dim), 0.0f);
@@ -245,7 +245,7 @@ bool kmeans_f32(const float* x, int64_t n, int64_t dim, int64_t k, const KMeansO
                 dst[d] = src[d] * inv;
             }
         }
-        // 空簇拆分：从最大簇搬一个点到空簇（确定性；与 faiss split_clusters 细节不同）
+        // Empty-cluster split: move one point from the largest cluster to the empty cluster (deterministic; differs from faiss split_clusters in detail)
         int64_t cursor = 0;
         for (int64_t j = 0; j < k; ++j) {
             if (total_cnt[static_cast<std::size_t>(j)] > 0) {
@@ -302,7 +302,7 @@ bool minibatch_kmeans_f32(const float* x, int64_t n, int64_t dim, int64_t k,
                           std::string* err) {
     if (x == nullptr || n <= 0 || dim <= 0 || k <= 0) {
         if (err) {
-            *err = "minibatch-kmeans 输入非法";
+            *err = "invalid minibatch-kmeans input";
         }
         return false;
     }
@@ -339,7 +339,7 @@ bool minibatch_kmeans_f32(const float* x, int64_t n, int64_t dim, int64_t k,
                             static_cast<std::size_t>(dim) * sizeof(float));
             }
             inertia += assign_to_centroids(buf.data(), m, dim, c.data(), k, &assign, threads);
-            // 增量更新（官方 sklearn MiniBatchKMeans 轻量版：eta=1/count）
+            // Incremental update (lightweight version of official sklearn MiniBatchKMeans: eta=1/count)
             for (int64_t p = 0; p < m; ++p) {
                 const int64_t i = order[static_cast<std::size_t>(start + p)];
                 const int32_t j = assign[static_cast<std::size_t>(p)];
@@ -366,7 +366,7 @@ bool minibatch_kmeans_f32(const float* x, int64_t n, int64_t dim, int64_t k,
             }
             if (no_improve >= 2) {
                 if (opt.verbose) {
-                    std::printf("[minibatch-kmeans] 提前停止（连续 2 轮改善 <0.1%%）\n");
+                    std::printf("[minibatch-kmeans] early stop (improvement <0.1%% for 2 consecutive epochs)\n");
                 }
                 break;
             }

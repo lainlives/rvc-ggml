@@ -1,5 +1,5 @@
 // gguf_model.cpp
-// GGUF 加载实现（参照 MSST-GGML，按 RVC 场景增强元数据与类型支持）。
+// GGUF loading implementation (modeled on MSST-GGML, with metadata and type support enhanced for RVC scenarios).
 
 #include "gguf_model.h"
 #include "utils.h"
@@ -13,7 +13,7 @@
 
 namespace {
 
-// 通用元数据拷贝：把全部键值读入主机内存，避免 gguf_context 释放后失效
+// Generic metadata copy: read all key-values into host memory so they survive gguf_context release
 void copy_metadata(gguf_context* ctx, int64_t n_kv,
     std::vector<std::pair<std::string, int64_t>>& u32,
     std::vector<std::pair<std::string, float>>& f32,
@@ -24,7 +24,7 @@ void copy_metadata(gguf_context* ctx, int64_t n_kv,
         const char* key_raw = gguf_get_key(ctx, i);
         if (!key_raw) continue;
         const std::string key = key_raw;
-        // 跳过数组型
+        // Skip array types
         if (gguf_get_kv_type(ctx, i) == GGUF_TYPE_ARRAY) {
             continue;
         }
@@ -64,7 +64,7 @@ GgufModel::~GgufModel() {
 }
 
 void GgufModel::load(const std::string& path, ggml_backend_t backend) {
-    Logger::info("加载 GGUF: " + path);
+    Logger::info("Loading GGUF: " + path);
 
     struct gguf_init_params params = {
         /*.no_alloc = */ true,
@@ -72,7 +72,7 @@ void GgufModel::load(const std::string& path, ggml_backend_t backend) {
     };
     gguf_context* ctx_gguf = gguf_init_from_file(path.c_str(), params);
     if (!ctx_gguf) {
-        throw std::runtime_error("无法打开 GGUF 文件: " + path);
+        throw std::runtime_error("Failed to open GGUF file: " + path);
     }
 
     try {
@@ -93,7 +93,7 @@ void GgufModel::load_meta_only(const std::string& path) {
     };
     gguf_context* ctx_gguf = gguf_init_from_file(path.c_str(), params);
     if (!ctx_gguf) {
-        throw std::runtime_error("无法打开 GGUF 文件: " + path);
+        throw std::runtime_error("Failed to open GGUF file: " + path);
     }
     try {
         load_metadata(ctx_gguf);
@@ -178,23 +178,23 @@ void GgufModel::load_metadata(gguf_context* ctx_gguf) {
 
     int64_t arch_idx = gguf_find_key(ctx_gguf, "general.architecture");
     if (arch_idx < 0) {
-        throw std::runtime_error("GGUF 缺少 general.architecture 键");
+        throw std::runtime_error("GGUF is missing the general.architecture key");
     }
     architecture_ = gguf_get_val_str(ctx_gguf, arch_idx);
-    Logger::info("架构: " + architecture_);
+    Logger::info("Architecture: " + architecture_);
 }
 
 void GgufModel::load_weights(gguf_context* ctx_gguf, const std::string& path, ggml_backend_t backend) {
     buffer_weights_ = ggml_backend_alloc_ctx_tensors_from_buft(
         ctx_weights_, ggml_backend_get_default_buffer_type(backend));
     if (!buffer_weights_) {
-        throw std::runtime_error("权重缓冲区分配失败（显存不足？）");
+        throw std::runtime_error("Failed to allocate weight buffer (out of VRAM?)");
     }
 
     std::filesystem::path p(path);
     FILE* file = _wfopen(p.wstring().c_str(), L"rb");
     if (!file) {
-        throw std::runtime_error("无法打开文件: " + path);
+        throw std::runtime_error("Failed to open file: " + path);
     }
 
     const size_t data_offset = gguf_get_data_offset(ctx_gguf);
@@ -211,12 +211,12 @@ void GgufModel::load_weights(gguf_context* ctx_gguf, const std::string& path, gg
 
             if (_fseeki64(file, static_cast<long long>(offset), SEEK_SET) != 0) {
                 fclose(file);
-                throw std::runtime_error("GGUF 定位失败: " + std::string(t->name));
+                throw std::runtime_error("GGUF seek failed: " + std::string(t->name));
             }
             const size_t rd = fread(read_buf.data(), 1, size, file);
             if (rd != size) {
                 fclose(file);
-                throw std::runtime_error("GGUF 数据不完整: " + std::string(t->name));
+                throw std::runtime_error("GGUF data is incomplete: " + std::string(t->name));
             }
 
             ggml_backend_tensor_set(t, read_buf.data(), 0, size);
@@ -226,17 +226,17 @@ void GgufModel::load_weights(gguf_context* ctx_gguf, const std::string& path, gg
     }
     fclose(file);
 
-    // Q12：训练态 GGUF 直读——折叠 weight_norm（缓冲分配后、建图前 materialize。
-    // 仅在检测到 X.weight_g/weight_v 且缺 X.weight 时生效；推理格式 GGUF 无影响）
+    // Q12: read training-state GGUF directly — fold weight_norm (materialize after buffer allocation and before graph building.
+    // Only applies when X.weight_g/weight_v are present and X.weight is missing; inference-format GGUF is unaffected)
     fold_weight_norm_tensors(backend);
 
     tensor_count_ = n_loaded;
-    Logger::info("权重加载完成: " + std::to_string(n_loaded) + " 张量");
+    Logger::info("Weight loading complete: " + std::to_string(n_loaded) + " tensors");
 }
 
 namespace {
 
-// 张量真实维数（忽略尾部 size-1 维），与 torch 形状反序配合使用
+// Real tensor dimensionality (ignoring trailing size-1 dims); used with reversed torch shapes
 int fold_infer_ndim(const int64_t ne[4]) {
     int nd = 1;
     for (int i = 0; i < 4; ++i) {
@@ -250,7 +250,7 @@ bool fold_ends_with(const std::string& s, const char* suf) {
     return s.size() >= n && std::memcmp(s.data() + (s.size() - n), suf, n) == 0;
 }
 
-// 读取张量为 F32 主机数据（支持 F32/F16；其余类型报错）
+// Read a tensor as F32 host data (supports F32/F16; other types raise an error)
 void fold_tensor_to_host(ggml_tensor* t, std::vector<float>& out) {
     const size_t n = static_cast<size_t>(ggml_nelements(t));
     out.resize(n);
@@ -263,8 +263,8 @@ void fold_tensor_to_host(ggml_tensor* t, std::vector<float>& out) {
         for (size_t i = 0; i < n; ++i) out[i] = ggml_fp16_to_fp32(raw[i]);
     }
     else {
-        throw std::runtime_error(std::string("weight_norm 折叠：不支持张量类型 ") +
-            ggml_type_name(t->type) + "（" + t->name + "）");
+        throw std::runtime_error(std::string("weight_norm folding: unsupported tensor type ") +
+            ggml_type_name(t->type) + " (" + t->name + ")");
     }
 }
 
@@ -273,7 +273,7 @@ void fold_tensor_to_host(ggml_tensor* t, std::vector<float>& out) {
 void GgufModel::fold_weight_norm_tensors(ggml_backend_t backend) {
     if (!ctx_weights_) return;
 
-    // 收集需要折叠的 (module_base, weight_g, weight_v)
+    // Collect the (module_base, weight_g, weight_v) entries that need folding
     struct Pending { std::string base; ggml_tensor* g; ggml_tensor* v; };
     std::vector<Pending> pending;
     for (ggml_tensor* t = ggml_get_first_tensor(ctx_weights_); t;
@@ -288,19 +288,19 @@ void GgufModel::fold_weight_norm_tensors(ggml_backend_t backend) {
     }
     if (pending.empty()) return;
 
-    // 独立 context + 缓冲（ctx_weights_ 元数据区已满，不能追加张量）
+    // Separate context + buffer (the ctx_weights_ metadata area is full; no more tensors can be appended)
     const size_t mem = (pending.size() + 4) * ggml_tensor_overhead() + 1024 * 1024;
     struct ggml_init_params ip = { /*.mem_size=*/ mem, /*.mem_buffer=*/ nullptr,
                                    /*.no_alloc=*/ true };
     ggml_context* cfold = ggml_init(ip);
     if (!cfold) {
-        throw std::runtime_error("weight_norm 折叠：创建 context 失败");
+        throw std::runtime_error("weight_norm folding: failed to create context");
     }
 
     std::vector<ggml_tensor*> wlist;
     wlist.reserve(pending.size());
     for (const Pending& p : pending) {
-        // weight 与 weight_v 同形（fold 只改数值、不改形状）
+        // weight has the same shape as weight_v (folding only changes values, not shapes)
         ggml_tensor* w = ggml_new_tensor(cfold, GGML_TYPE_F32, GGML_MAX_DIMS, p.v->ne);
         ggml_set_name(w, (p.base + ".weight").c_str());
         wlist.push_back(w);
@@ -310,7 +310,7 @@ void GgufModel::fold_weight_norm_tensors(ggml_backend_t backend) {
         cfold, ggml_backend_get_default_buffer_type(backend));
     if (!buffer_fold_) {
         ggml_free(cfold);
-        throw std::runtime_error("weight_norm 折叠：缓冲分配失败（显存不足？）");
+        throw std::runtime_error("weight_norm folding: buffer allocation failed (out of VRAM?)");
     }
 
     int n_folded = 0;
@@ -327,12 +327,12 @@ void GgufModel::fold_weight_norm_tensors(ggml_backend_t backend) {
         for (int d = 0; d < v_ndim; ++d) total *= vshape[d];
         const int64_t O = vshape[0];
         if (static_cast<int64_t>(v.size()) != total) {
-            throw std::runtime_error("weight_norm 折叠：张量元素数异常（" + p.base + "）");
+            throw std::runtime_error("weight_norm folding: unexpected tensor element count (" + p.base + ")");
         }
         if (static_cast<int64_t>(g.size()) != O) {
             throw std::runtime_error(
-                "weight_norm 折叠：暂不支持 fairseq dim=(0,1) 约定（" + p.base +
-                "：g.numel=" + std::to_string(g.size()) + ", dim0=" + std::to_string(O) + "）");
+                "weight_norm folding: fairseq dim=(0,1) convention not yet supported (" + p.base +
+                ": g.numel=" + std::to_string(g.size()) + ", dim0=" + std::to_string(O) + ")");
         }
 
         const int64_t inner = (O > 0) ? total / O : 0;
@@ -357,7 +357,7 @@ void GgufModel::fold_weight_norm_tensors(ggml_backend_t backend) {
     }
 
     ctx_fold_ = cfold;
-    Logger::info("weight_norm 折叠: " + std::to_string(n_folded) + " 张量（训练态 GGUF 直读）");
+    Logger::info("weight_norm folded: " + std::to_string(n_folded) + " tensors (training-state GGUF read directly)");
 }
 
 ggml_tensor* GgufModel::weight(const std::string& name) const {
@@ -370,8 +370,8 @@ ggml_tensor* GgufModel::weight(const std::string& name) const {
 
 namespace {
 
-// Q12：训练态 GGUF 直读——rvc.* 缺失时回退 rvc.train.*（键名去掉 .train，类型对应）。
-// 只影响读取层；推理格式 GGUF 的键原样命中，无行为变化。
+// Q12: read training-state GGUF directly — fall back to rvc.train.* when rvc.* is missing (key name loses .train; types correspond).
+// Only affects the read layer; inference-format GGUF keys match as-is with no behavior change.
 std::string meta_fallback_key(const std::string& key) {
     if (key.rfind("rvc.", 0) == 0 && key.rfind("rvc.train.", 0) != 0) {
         return "rvc.train." + key.substr(4);
@@ -462,7 +462,7 @@ std::vector<int64_t> GgufModel::meta_array_i32(const std::string& key) const {
 std::vector<float> GgufModel::read_f32(const std::string& name) const {
     ggml_tensor* t = weight(name);
     if (!t) {
-        throw std::runtime_error("缺少张量: " + name);
+        throw std::runtime_error("Missing tensor: " + name);
     }
     const size_t n = static_cast<size_t>(ggml_nelements(t));
     std::vector<float> out(n);
@@ -479,12 +479,12 @@ std::vector<float> GgufModel::read_f32(const std::string& name) const {
     if (ggml_is_quantized(t->type)) {
         const auto* traits = ggml_get_type_traits(t->type);
         if (!traits || !traits->to_float) {
-            throw std::runtime_error("read_f32: 量化类型不支持反量化: " + name);
+            throw std::runtime_error("read_f32: quantized type does not support dequantization: " + name);
         }
         std::vector<uint8_t> raw(ggml_nbytes(t));
         ggml_backend_tensor_get(t, raw.data(), 0, raw.size());
         traits->to_float(raw.data(), out.data(), static_cast<int64_t>(n));
         return out;
     }
-    throw std::runtime_error("read_f32 不支持该张量类型: " + name);
+    throw std::runtime_error("read_f32 does not support this tensor type: " + name);
 }

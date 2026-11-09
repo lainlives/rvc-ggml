@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 说话人嵌入 emb_g 实现（src/model/emb.cpp）
+// RVC-Train-GGML - speaker embedding emb_g implementation (src/model/emb.cpp)
 #include "model/emb.h"
 
 #include <cstdio>
@@ -12,17 +12,17 @@ traincpp::Tensor* emb_g_forward(traincpp::Context* ctx, const ModelParams& param
     Tensor* weight = params.find("emb_g.weight");
     if (weight == nullptr) {
         if (err != nullptr) {
-            *err = "缺失参数: emb_g.weight";
+            *err = "missing parameter: emb_g.weight";
         }
         return nullptr;
     }
     if (sid == nullptr) {
         if (err != nullptr) {
-            *err = "emb_g 输入 sid 为空";
+            *err = "emb_g input sid is null";
         }
         return nullptr;
     }
-    // 手工装配（避免 init helper 改写张量名；层结构是 POD）
+    // Manual assembly (avoid init helpers rewriting tensor names; the layer struct is POD)
     Embedding layer;
     layer.weight         = weight;
     layer.embedding_dim  = weight->ne[0];

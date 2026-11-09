@@ -1,9 +1,9 @@
-// cache_read.cpp —— M5-1 训练缓存只读解析（声明见 cache.h）
+// cache_read.cpp -- M5-1 training cache read-only parsing (declarations in cache.h)
 //
-// 供 rvc-train 读取 M4 缓存（dataset.json + samples/*.bin）；纯文件 I/O，
-// 不包含 prep/spec.cpp/pocketfft/rvc_core，只有 common/json 与 cache.h 结构体。
-// 与写入侧（cache.cpp）保持同一格式版本；完整性检查（文件大小/帧数公式）仍由
-// rvc-prep 的 validate_cache 负责，本文件只保证读取语义正确（presence/元素数）。
+// For rvc-train to read the M4 cache (dataset.json + samples/*.bin); pure file I/O,
+// no prep/spec.cpp/pocketfft/rvc_core, only common/json and the cache.h structs.
+// Keeps the same format version as the writing side (cache.cpp); integrity checks (file sizes/frame-count
+// formulas) still belong to rvc-prep's validate_cache, this file only guarantees correct read semantics (presence/element counts).
 
 #include "prep/cache.h"
 
@@ -25,7 +25,7 @@ namespace {
 
 constexpr int64_t kCacheFormatVersion = 1;
 
-// 与 cache.cpp 的 cache_sample_relpath 同格式（避免 rvc-train 链接写入侧 cache.cpp）
+// Same format as cache.cpp's cache_sample_relpath (avoids rvc-train linking the writing-side cache.cpp)
 std::string sample_relpath(const std::string& id, const char* kind) {
     return "samples/" + id + "." + kind + ".bin";
 }
@@ -42,19 +42,19 @@ bool j_bool(const common::JsonValue* v, bool fallback) {
     return (v != nullptr && v->is_bool()) ? v->as_bool(fallback) : fallback;
 }
 
-// 读取整文件为字节缓冲（大小不符时由调用方判断）
+// Read the whole file into a byte buffer (caller decides on size mismatches)
 bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::string* err) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) {
         if (err != nullptr) {
-            *err = "无法打开: " + path;
+            *err = "cannot open: " + path;
         }
         return false;
     }
     const std::streamoff size = f.tellg();
     if (size < 0) {
         if (err != nullptr) {
-            *err = "无法获取大小: " + path;
+            *err = "cannot get size: " + path;
         }
         return false;
     }
@@ -65,7 +65,7 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     }
     if (!f) {
         if (err != nullptr) {
-            *err = "读取失败: " + path;
+            *err = "read failed: " + path;
         }
         return false;
     }
@@ -85,10 +85,10 @@ bool kind_present(const CacheSampleInfo& s, const std::string& kind, std::string
     } else if (kind == "spec") {
         present = s.has_spec;
     } else if (err != nullptr) {
-        *err = "样本 " + s.id + ": 未知文件类型 " + kind;
+        *err = "sample " + s.id + ": unknown file kind " + kind;
     }
     if (!present && err != nullptr) {
-        *err = "样本 " + s.id + ": 缺少文件类型 " + kind;
+        *err = "sample " + s.id + ": missing file kind " + kind;
     }
     return present;
 }
@@ -116,14 +116,14 @@ bool parse_sample(const common::JsonValue& v, std::size_t index, CacheSampleInfo
                   std::string* err) {
     if (!v.is_object()) {
         if (err != nullptr) {
-            *err = "samples[" + std::to_string(index) + "] 不是对象";
+            *err = "samples[" + std::to_string(index) + "] is not an object";
         }
         return false;
     }
     const common::JsonValue* id = v.find("id");
     if (id == nullptr || !id->is_string() || id->as_string().empty()) {
         if (err != nullptr) {
-            *err = "samples[" + std::to_string(index) + "] 缺少 id";
+            *err = "samples[" + std::to_string(index) + "] is missing id";
         }
         return false;
     }
@@ -142,7 +142,7 @@ bool parse_sample(const common::JsonValue& v, std::size_t index, CacheSampleInfo
     const common::JsonValue* files = v.find("files");
     if (files == nullptr || !files->is_object()) {
         if (err != nullptr) {
-            *err = "样本 " + out->id + " 缺少 files 对象";
+            *err = "sample " + out->id + " is missing the files object";
         }
         return false;
     }
@@ -167,7 +167,7 @@ const CacheSampleInfo* CacheDataset::find(const std::string& id) const {
 bool load_cache_index(const std::string& cache_dir, CacheDataset* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "load_cache_index: out 为空";
+            *err = "load_cache_index: out is null";
         }
         return false;
     }
@@ -178,7 +178,7 @@ bool load_cache_index(const std::string& cache_dir, CacheDataset* out, std::stri
     }
     if (!root.is_object()) {
         if (err != nullptr) {
-            *err = "dataset.json 顶层不是对象: " + dataset_path.string();
+            *err = "dataset.json top level is not an object: " + dataset_path.string();
         }
         return false;
     }
@@ -187,8 +187,8 @@ bool load_cache_index(const std::string& cache_dir, CacheDataset* out, std::stri
     if (format == nullptr || !format->is_string() || format->as_string() != "rvc-train-cache" ||
         version == nullptr || !version->is_number() || version->as_int(-1) != kCacheFormatVersion) {
         if (err != nullptr) {
-            *err = "dataset.json format/format_version 不符（期望 rvc-train-cache v" +
-                   std::to_string(kCacheFormatVersion) + "）";
+            *err = "dataset.json format/format_version mismatch (expected rvc-train-cache v" +
+                   std::to_string(kCacheFormatVersion) + ")";
         }
         return false;
     }
@@ -224,7 +224,7 @@ bool load_cache_index(const std::string& cache_dir, CacheDataset* out, std::stri
     const common::JsonValue* samples = root.find("samples");
     if (samples == nullptr || !samples->is_array()) {
         if (err != nullptr) {
-            *err = "dataset.json 缺少 samples 数组";
+            *err = "dataset.json is missing the samples array";
         }
         return false;
     }
@@ -236,7 +236,7 @@ bool load_cache_index(const std::string& cache_dir, CacheDataset* out, std::stri
         }
         if (ds.find(info.id) != nullptr) {
             if (err != nullptr) {
-                *err = "样本 id 重复: " + info.id;
+                *err = "duplicate sample id: " + info.id;
             }
             return false;
         }
@@ -253,7 +253,7 @@ bool read_cache_sample_f32(const std::string& cache_dir, const CacheSampleInfo& 
                            std::vector<float>* out, std::string* err) {
     if (out == nullptr || kind == nullptr) {
         if (err != nullptr) {
-            *err = "read_cache_sample_f32: 参数为空";
+            *err = "read_cache_sample_f32: null argument";
         }
         return false;
     }
@@ -264,7 +264,7 @@ bool read_cache_sample_f32(const std::string& cache_dir, const CacheSampleInfo& 
     const int64_t count = expected_elements(s, k);
     if (count < 0) {
         if (err != nullptr) {
-            *err = "样本 " + s.id + ": 文件类型 " + k + " 不是 F32";
+            *err = "sample " + s.id + ": file kind " + k + " is not F32";
         }
         return false;
     }
@@ -276,8 +276,8 @@ bool read_cache_sample_f32(const std::string& cache_dir, const CacheSampleInfo& 
     const int64_t want = count * 4;
     if (static_cast<int64_t>(bytes.size()) != want) {
         if (err != nullptr) {
-            *err = "文件 " + path + " 大小 " + std::to_string(bytes.size()) + " != 期望 " +
-                   std::to_string(want) + " 字节";
+            *err = "file " + path + " size " + std::to_string(bytes.size()) + " != expected " +
+                   std::to_string(want) + " bytes";
         }
         return false;
     }
@@ -292,14 +292,14 @@ bool read_cache_sample_i32(const std::string& cache_dir, const CacheSampleInfo& 
                            std::vector<int32_t>* out, std::string* err) {
     if (out == nullptr || kind == nullptr) {
         if (err != nullptr) {
-            *err = "read_cache_sample_i32: 参数为空";
+            *err = "read_cache_sample_i32: null argument";
         }
         return false;
     }
     const std::string k = kind;
     if (k != "f0bin") {
         if (err != nullptr) {
-            *err = "read_cache_sample_i32: 仅支持 f0bin（收到 " + k + "）";
+            *err = "read_cache_sample_i32: only f0bin is supported (got " + k + ")";
         }
         return false;
     }
@@ -315,8 +315,8 @@ bool read_cache_sample_i32(const std::string& cache_dir, const CacheSampleInfo& 
     const int64_t want = count * 4;
     if (static_cast<int64_t>(bytes.size()) != want) {
         if (err != nullptr) {
-            *err = "文件 " + path + " 大小 " + std::to_string(bytes.size()) + " != 期望 " +
-                   std::to_string(want) + " 字节";
+            *err = "file " + path + " size " + std::to_string(bytes.size()) + " != expected " +
+                   std::to_string(want) + " bytes";
         }
         return false;
     }

@@ -1,9 +1,9 @@
 // sinegen.cpp
-// SineGen 主机端实现（对齐 RVC models.py）：
-//   rad_values = (f0/sr) % 1（逐帧，最近邻上采样到逐样本）
-//   tmp_over_one = cumsum(rad) * upp（按 align_corners=True 线性插值到逐样本，%1 检测回绕）
+// Host-side SineGen implementation (aligned with RVC models.py):
+//   rad_values = (f0/sr) % 1 (per frame, nearest-neighbor upsampled to per sample)
+//   tmp_over_one = cumsum(rad) * upp (linear interpolation to per sample with align_corners=True; wraparound detection via %1)
 //   sine = sin(cumsum(rad + shift)) * 0.1
-//   uv = f0 > 0（最近邻上采样）；noise_amp = uv*0.003 + (1-uv)*0.1/3
+//   uv = f0 > 0 (nearest-neighbor upsampling); noise_amp = uv*0.003 + (1-uv)*0.1/3
 //   output = sine*uv + noise_amp*noise
 
 #include "rvc/sinegen.h"
@@ -45,7 +45,7 @@ std::vector<float> generate(const std::vector<float>& f0, int sample_rate, int u
         noise_data = noise_buf.data();
     }
 
-    // 逐帧相位增量与累积（cumsum * upp）
+    // Per-frame phase increment and accumulation (cumsum * upp)
     std::vector<double> cumulative(static_cast<size_t>(frames), 0.0);
     double running = 0.0;
     for (int64_t t = 0; t < frames; ++t) {
@@ -55,7 +55,7 @@ std::vector<float> generate(const std::vector<float>& f0, int sample_rate, int u
         cumulative[static_cast<size_t>(t)] = running * static_cast<double>(upp);
     }
 
-    // align_corners=True 线性插值：pos = i * (frames-1) / (total-1)
+    // align_corners=True linear interpolation: pos = i * (frames-1) / (total-1)
     auto interpolate = [&](int64_t i) -> double {
         if (total <= 1 || frames <= 1) {
             return cumulative[0];
@@ -79,7 +79,7 @@ std::vector<float> generate(const std::vector<float>& f0, int sample_rate, int u
         const double interp = interpolate(i);
         const double mod = interp - std::floor(interp);
         if (i > 0 && (mod - prev_mod) < 0.0) {
-            phase -= 1.0;    // 相位回绕补偿（等价于 Python 的 cumsum_shift）
+            phase -= 1.0;    // Phase wraparound compensation (equivalent to cumsum_shift in Python)
         }
         prev_mod = mod;
         phase += static_cast<double>(base_rad);

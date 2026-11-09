@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# verify_gguf.py — 校验 RVC-GGML 导出的 GGUF 与原始 PyTorch 权重的一致性
+# verify_gguf.py — verify consistency between RVC-GGML exported GGUF files and the original PyTorch weights
 #
-# 用法:
+# Usage:
 #   <python> scripts/verify_gguf.py hubert --gguf models/hubert.gguf --pth <hubert_base.pt>
 #   <python> scripts/verify_gguf.py rmvpe  --gguf models/rmvpe.gguf  --pth <rmvpe.pt>
 #   <python> scripts/verify_gguf.py model  --gguf models/soyo.gguf   --pth <soyo.pth>
@@ -23,12 +23,12 @@ from export_gguf import fold_weight_norm  # noqa: E402
 
 
 def expected_layout(name: str, ref: torch.Tensor) -> np.ndarray:
-    """GGUF（ggml ne 序）与 PyTorch 形状一致；展平布局（rvc.conv_flat）时最后一维合并。"""
+    """GGUF (ggml ne order) matches the PyTorch shape; flattened layouts (rvc.conv_flat) merge the last dimension."""
     return np.ascontiguousarray(ref.float().numpy())
 
 
 def read_gguf_tensor(t, ref_shape) -> np.ndarray:
-    """读取张量：量化类型反量化；展平布局还原为 PyTorch 形状。"""
+    """Read a tensor: dequantize quantized types; restore flattened layouts to the PyTorch shape."""
     type_name = t.tensor_type.name
     if type_name in ("F32", "F16"):
         got = np.asarray(t.data).astype(np.float32)
@@ -40,7 +40,7 @@ def read_gguf_tensor(t, ref_shape) -> np.ndarray:
 
 
 def tolerance_for(type_name: str):
-    """返回 (atol, corr_min)：量化档位越激进容差越大。"""
+    """Returns (atol, corr_min): more aggressive quant levels use larger tolerances."""
     if type_name == "F32":
         return 1e-5, 0.999999
     if type_name == "F16":
@@ -65,7 +65,7 @@ def check(name, ref: np.ndarray, got: np.ndarray, atol=1e-5, corr_min=0.0, enfor
         corr = float(np.corrcoef(ref_f, got_f)[0, 1])
     else:
         corr = 1.0
-    # 量化档位以相关系数为准（逐张量 max_err 受离群权重影响大）；F32/F16 用 atol
+    # Quant levels are judged by correlation (per-tensor max_err is strongly affected by outlier weights); F32/F16 use atol
     ok = (err <= atol if enforce_atol else True) and corr >= corr_min
     flag = "OK  " if ok else "FAIL"
     print(f"  [{flag}] {name}: max_err={err:.3e} corr={corr:.8f} shape={tuple(ref.shape)}")
@@ -75,14 +75,14 @@ def check(name, ref: np.ndarray, got: np.ndarray, atol=1e-5, corr_min=0.0, enfor
 def verify_state(gguf_path: str, state: dict, skip_suffix=(".num_batches_tracked",)) -> bool:
     reader = GGUFReader(gguf_path)
     reader_tensors = {t.name: t for t in reader.tensors}
-    print(f"GGUF 张量数: {len(reader_tensors)}")
+    print(f"GGUF tensor count: {len(reader_tensors)}")
     ok = True
     checked = 0
     for key, value in state.items():
         if key.endswith(skip_suffix):
             continue
         if key not in reader_tensors:
-            print(f"  [FAIL] 缺少张量: {key}")
+            print(f"  [FAIL] missing tensor: {key}")
             ok = False
             continue
         t = reader_tensors[key]
@@ -93,7 +93,7 @@ def verify_state(gguf_path: str, state: dict, skip_suffix=(".num_batches_tracked
         if not check(key, ref, got, atol=atol, corr_min=corr_min, enforce_atol=enforce_atol):
             ok = False
         checked += 1
-    print(f"已校验 {checked} 张量")
+    print(f"checked {checked} tensors")
     return ok
 
 
@@ -112,7 +112,7 @@ def verify_rmvpe(gguf_path: str, pth_path: str) -> bool:
         t = next(x for x in reader.tensors if x.name == "buffer_mel_basis")
         print(f"  [OK  ] buffer_mel_basis: shape={t.data.shape}")
     else:
-        print("  [FAIL] 缺少 buffer_mel_basis")
+        print("  [FAIL] missing buffer_mel_basis")
         ok = False
     return ok
 
@@ -172,7 +172,7 @@ def main() -> int:
         ok = verify_model(args.gguf, args.pth)
     else:
         ok = verify_index(args.gguf, args.index)
-    print("== 结果:", "通过" if ok else "失败", "==")
+    print("== Result:", "PASS" if ok else "FAIL", "==")
     return 0 if ok else 1
 
 

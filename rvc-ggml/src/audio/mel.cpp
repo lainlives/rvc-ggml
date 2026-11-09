@@ -1,5 +1,5 @@
 // mel.cpp
-// RMVPE mel 前端实现（pocketfft）
+// RMVPE mel front-end implementation (pocketfft)
 
 #include "mel.h"
 
@@ -35,7 +35,7 @@ std::vector<float> make_mel_filterbank(int sample_rate, int n_fft, int n_mels,
 
     const double mel_min = hz_to_mel_htk(fmin);
     const double mel_max = hz_to_mel_htk(fmax);
-    // librosa: mel_frequencies 在 mel 域均分
+    // librosa: mel_frequencies are evenly spaced in the mel domain
     std::vector<double> mels(static_cast<size_t>(n_mels) + 2);
     for (int i = 0; i <= n_mels + 1; ++i) {
         mels[static_cast<size_t>(i)] = mel_min + (mel_max - mel_min) * i / (n_mels + 1);
@@ -45,7 +45,7 @@ std::vector<float> make_mel_filterbank(int sample_rate, int n_fft, int n_mels,
         freqs[static_cast<size_t>(i)] = mel_to_hz_htk(mels[static_cast<size_t>(i)]);
     }
 
-    // 三角滤波器（librosa：slaney 归一化不用于 htk 模式）
+    // Triangular filters (librosa: slaney normalization is not used in htk mode)
     const double fft_freq_step = static_cast<double>(sample_rate) / n_fft;
     for (int m = 0; m < n_mels; ++m) {
         const double lower = freqs[static_cast<size_t>(m)];
@@ -75,7 +75,7 @@ std::vector<float> log_mel_spectrogram(const std::vector<float>& audio,
     if (audio.empty()) return {};
     const int n_bins = n_fft / 2 + 1;
     if (static_cast<int>(mel_basis.size()) != n_mels * n_bins) {
-        throw std::runtime_error("mel 滤波器组尺寸不匹配");
+        throw std::runtime_error("mel filterbank size mismatch");
     }
 
     // center=True: reflect pad n_fft/2
@@ -98,7 +98,7 @@ std::vector<float> log_mel_spectrogram(const std::vector<float>& audio,
 
     const int64_t frames = (n + 2 * pad - n_fft) / hop + 1;
 
-    // periodic Hann 窗（torch.hann_window 默认 periodic=True）
+    // periodic Hann window (torch.hann_window defaults to periodic=True)
     std::vector<double> window(static_cast<size_t>(n_fft));
     for (int i = 0; i < n_fft; ++i) {
         window[static_cast<size_t>(i)] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / n_fft);

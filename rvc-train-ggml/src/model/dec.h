@@ -1,11 +1,11 @@
-// RVC-Train-GGML - GeneratorNSF dec（src/model/dec.h）
+// RVC-Train-GGML - GeneratorNSF dec (src/model/dec.h)
 //
-// 对应运行时 `infer_pack/models.py:467-584` 的 `GeneratorNSF`（f0 版）：
-//   sine 激励（主机侧 SineGen → m_source.l_linear + tanh）→ noise_convs 短路注入；
-//   conv_pre(z) + cond(g) → 4 级 [LeakyReLU(0.1) → ConvT1d(weight_norm，中心裁剪 pad)
-//   + noise_conv(har_source) → num_kernels 个 ResBlock1 取平均] →
-//   LeakyReLU(0.01) → conv_post（无 bias）→ tanh。
-// 权重为训练态 GGUF（weight_g/weight_v 不折叠；张量名保持原名）。
+// Corresponds to runtime `infer_pack/models.py:467-584` `GeneratorNSF` (f0 version):
+//   sine excitation (host-side SineGen -> m_source.l_linear + tanh) -> noise_convs short-circuit injection;
+//   conv_pre(z) + cond(g) -> 4 stages [LeakyReLU(0.1) -> ConvT1d(weight_norm, center-crop pad)
+//   + noise_conv(har_source) -> average of num_kernels ResBlock1] ->
+//   LeakyReLU(0.01) -> conv_post (no bias) -> tanh.
+// Weights are training-state GGUF (weight_g/weight_v not folded; tensor names kept as-is).
 #pragma once
 
 #include "model/model.h"
@@ -21,19 +21,19 @@ namespace rvc_train {
 namespace model {
 
 struct DecConfig {
-    std::string prefix = "dec";         // 参数名前缀（torch 键名）
-    int64_t in_channels = 0;            // z 通道（conv_pre 输入）
+    std::string prefix = "dec";         // parameter name prefix (torch key name)
+    int64_t in_channels = 0;            // z channels (conv_pre input)
     int64_t upsample_initial_channel = 0;
-    int64_t gin_channels = 0;           // 仅记录（cond 形状由权重决定）
+    int64_t gin_channels = 0;           // recorded only (cond shape is determined by weights)
     std::vector<int64_t> upsample_rates;
     std::vector<int64_t> upsample_kernel_sizes;
     std::vector<int64_t> resblock_kernel_sizes;
-    std::vector<int64_t> resblock_dilation_sizes;   // 展平（每个 kernel 3 个 dilation）
+    std::vector<int64_t> resblock_dilation_sizes;   // flattened (3 dilations per kernel)
 };
 
 struct DecModule {
     DecConfig cfg;
-    traincpp::Linear l_linear;                      // m_source.l_linear（1→1，作用于激励源）
+    traincpp::Linear l_linear;                      // m_source.l_linear (1->1, applied to the excitation source)
     traincpp::Conv1d conv_pre;
     traincpp::Conv1d cond;
     traincpp::Conv1d conv_post;
@@ -44,21 +44,21 @@ struct DecModule {
     int64_t num_kernels = 0;
 };
 
-// 按前缀取参数并装配（只做结构，不装载数据；张量名保持 GGUF 原名不变）。
+// Fetch parameters by prefix and assemble (structure only, no data loading; tensor names keep their original GGUF names).
 bool dec_load(const ModelParams& params, const DecConfig& cfg, DecModule* out, std::string* err);
 
-// 前向捕获（对拍用；不需要时传 nullptr）
+// Forward captures (for comparison; pass nullptr if not needed)
 struct DecCaptures {
-    traincpp::Tensor* sine_merged = nullptr;    // l_linear+tanh 后激励源 [L,1,B]
-    traincpp::Tensor* cond = nullptr;           // cond_layer 输出 [1,512,B]
-    traincpp::Tensor* conv_pre = nullptr;       // conv_pre 输出 [T,512,B]
-    traincpp::Tensor* x_cond = nullptr;         // conv_pre + cond 后 [T,512,B]
-    std::vector<traincpp::Tensor*> ups;         // 每级 ConvT1d 输出
-    std::vector<traincpp::Tensor*> levels;      // 每级 ResBlock 平均后
+    traincpp::Tensor* sine_merged = nullptr;    // excitation source after l_linear+tanh [L,1,B]
+    traincpp::Tensor* cond = nullptr;           // cond_layer output [1,512,B]
+    traincpp::Tensor* conv_pre = nullptr;       // conv_pre output [T,512,B]
+    traincpp::Tensor* x_cond = nullptr;         // after conv_pre + cond [T,512,B]
+    std::vector<traincpp::Tensor*> ups;         // output of each ConvT1d stage
+    std::vector<traincpp::Tensor*> levels;      // after each stage's ResBlock average
 };
 
-// z=[T,C,B]；sine_source=[L,1,B]（L = T·∏upsample_rates，主机 SineGen 产出）；
-// g=[1,gin,B]（无条件传 nullptr）。返回 o=[L,1,B]；失败返回 nullptr。
+// z=[T,C,B]; sine_source=[L,1,B] (L = T·∏upsample_rates, produced by host SineGen);
+// g=[1,gin,B] (pass nullptr for unconditional). Returns o=[L,1,B]; nullptr on failure.
 traincpp::Tensor* dec_forward(traincpp::Context* ctx, const DecModule& dec, traincpp::Tensor* z,
                               traincpp::Tensor* sine_source, traincpp::Tensor* g = nullptr,
                               DecCaptures* caps = nullptr);

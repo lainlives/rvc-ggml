@@ -1,54 +1,54 @@
-// rvc-train - RVC 训练程序（M1 装载 + M2 前向 + M3 反向/损失/双图对拍）
+// rvc-train - RVC training program (M1 load + M2 forward + M3 backward/loss/dual-graph cross-check)
 //
-// 职责（M2–M3 已实现；训练循环属 M5）：
-//   RVC 模型装配（enc_p/enc_q/flow/dec/判别器）→ 双图 G/D + AdamW 训练 → 导出推理 GGUF
-//   链接 traincpp（Vulkan 训练；CPU 仅供参考/调试）。
+// Responsibilities (M2-M3 implemented; the training loop belongs to M5):
+//   Assemble the RVC model (enc_p/enc_q/flow/dec/discriminator) -> dual-graph G/D + AdamW training -> export inference GGUF
+//   Links traincpp (Vulkan training; CPU is reference/debug only).
 //
-// 当前支持的模式：
-//   --list-devices                仅列举 traincpp 设备
-//   --device N                    选择第 N 个设备（默认：优先 GPU → IGPU → CPU）
-//   --validate-gguf <file>        用 train.cpp 的 GGUF 结构自检校验文件
-//   --load-gguf <file>            装载训练态 GGUF（rvc.train.*）：按名建张量 → 分配 →
-//                                 装载全部 → 逐张量 CRC32 → 负向测试（缺失/形状不符）
-//   --dump-hashes <file>          配合 --load-gguf：写逐张量 CRC 清单
-//                                 （name ne0 ne1 ne2 ne3 nbytes crc32），供 verify_train_gguf.py 对比
-//   --selftest-forward            模型骨架/前向对拍（M2）：--weights <train.gguf> [--golden <dir>] [--module <name>]
-//                                 无 --module：M2-1 骨架自检（建参 + check_expected + manifest 摘要）
-//                                 有 --module：调运行时 golden 逐模块对拍
-//                                 （emb_g/wn/resblock1/dec/flow/enc_p/enc_q/synth/all；disc 需指定 D 权重）
-//   --selftest-backward           反向对拍（M3-1，固定 cotangent VJP）：
-//                                 --weights <train.gguf> --golden <m3 目录> [--module <name>] [--gradcheck SPEC]
-//                                 SPEC = "参数名[:元素下标];..." 或 "all"（全部参数首/中元素）
-//   --selftest-loss               损失/前端对拍（M3-2，官方 81eed5e 训练语义）：
-//                                 --golden <m3 目录> [--module <stft|mel|...|all>]（无需 --weights）
-//   --selftest-train-step         双图 G/D + 一步 AdamW 对拍（M3-3）：
-//                                 --weights <G train.gguf> --d-weights <D train.gguf> --golden <m3 目录>
-//   --selftest-train-loop         训练循环 10 步轨迹对拍（M5-2，单 ctx TrainStep）：
-//                                 --weights <G> --d-weights <D> --golden <m5loop 目录>
-//   --selftest-trainer            训练循环自检（M5-3，Trainer + checkpoint save→load 往返）：
-//                                 --weights <G> --d-weights <D> --exp <缓存> --out <目录> --steps N
-//                                 [--bucket T] [--batch N] [--disc-len N] [--config <json> 可给 v2 缓存]
-//   --train <config.json>         正式训练（M5-3：循环/日志/checkpoint/ExponentialLR；M7：run 段/scratch）：
-//                                 [--exp <缓存>] [--weights <G>|--pretrain-g <G>] [--d-weights <D>|--pretrain-d <D>]
-//                                 [--out <目录>] [--scratch]
+// Currently supported modes:
+//   --list-devices                list traincpp devices only
+//   --device N                    select device N (default: prefer GPU -> IGPU -> CPU)
+//   --validate-gguf <file>        validate a file with the train.cpp GGUF structure self-check
+//   --load-gguf <file>            load training-state GGUF (rvc.train.*): create tensors by name -> allocate ->
+//                                 load all -> per-tensor CRC32 -> negative tests (missing/shape mismatch)
+//   --dump-hashes <file>          with --load-gguf: write a per-tensor CRC manifest
+//                                 (name ne0 ne1 ne2 ne3 nbytes crc32), for comparison by verify_train_gguf.py
+//   --selftest-forward            model skeleton/forward cross-check (M2): --weights <train.gguf> [--golden <dir>] [--module <name>]
+//                                 without --module: M2-1 skeleton self-test (build params + check_expected + manifest summary)
+//                                 with --module: run the runtime golden per-module cross-check
+//                                 (emb_g/wn/resblock1/dec/flow/enc_p/enc_q/synth/all; disc requires D weights)
+//   --selftest-backward           backward cross-check (M3-1, fixed cotangent VJP):
+//                                 --weights <train.gguf> --golden <m3 dir> [--module <name>] [--gradcheck SPEC]
+//                                 SPEC = "param-name[:element-index];..." or "all" (first/middle element of every param)
+//   --selftest-loss               loss/frontend cross-check (M3-2, official 81eed5e training semantics):
+//                                 --golden <m3 dir> [--module <stft|mel|...|all>] (no --weights needed)
+//   --selftest-train-step         dual-graph G/D + one AdamW step cross-check (M3-3):
+//                                 --weights <G train.gguf> --d-weights <D train.gguf> --golden <m3 dir>
+//   --selftest-train-loop         training-loop 10-step trajectory cross-check (M5-2, single-ctx TrainStep):
+//                                 --weights <G> --d-weights <D> --golden <m5loop dir>
+//   --selftest-trainer            training-loop self-test (M5-3, Trainer + checkpoint save->load round trip):
+//                                 --weights <G> --d-weights <D> --exp <cache> --out <dir> --steps N
+//                                 [--bucket T] [--batch N] [--disc-len N] [--config <json> may supply a v2 cache]
+//   --train <config.json>         full training (M5-3: loop/log/checkpoint/ExponentialLR; M7: run section/scratch):
+//                                 [--exp <cache>] [--weights <G>|--pretrain-g <G>] [--d-weights <D>|--pretrain-d <D>]
+//                                 [--out <dir>] [--scratch]
 //                                 [--device N] [--steps N] [--bucket T] [--batch N] [--epochs N]
 //                                 [--disc-len N] [--resume <ckpt>] [--export-run-json <path>]
-//   --interactive                 M7 交互式训练向导（微调 / 从零；确认后落盘
-//                                 <out>/train_config.json 并直接开始训练）：
+//   --interactive                 M7 interactive training wizard (finetune / from scratch; after confirmation writes
+//                                 <out>/train_config.json and starts training immediately):
 //                                 [--config <base.json>] [--answers <file>] [--out DIR] [--device N]
 //                                 [--exp DIR] [--weights G] [--d-weights D] [--steps N] ...
-//   --selftest-wizard             M7-1 向导等价自检（G-7.1）：内置答案生成配置 vs 手写 JSON
-//   --selftest-scratch            M7-2 从零规格自检（G-7.2）：规格 vs M1 hashes + 生成 GGUF 校验
+//   --selftest-wizard             M7-1 wizard equivalence self-test (G-7.1): built-in answers config vs hand-written JSON
+//   --selftest-scratch            M7-2 from-scratch spec self-test (G-7.2): spec vs M1 hashes + generated GGUF validation
 //                                 [--config <json>] [--out DIR] [--g-hashes <f>] [--d-hashes <f>]
-//   --selftest-data               数据加载器对拍（M5-1，纯主机，无需设备/权重）：
-//                                 --golden <m5 目录> --exp <M4 缓存目录>
-//   --spike-train-ctx             单 ctx 共享参数双图 spike（M5-2）：
-//                                 --weights <G> --d-weights <D> --exp <缓存> [--bucket T] [--steps N]
-//                                 （G-5.2a：两次 buffer_alloc_graph_tensors + 内存/逐步 loss 实测）
-//   --selftest                    设备枚举 + 图计算自检（M0 冒烟；M8-3 起改为显式进入）
-//   无参数 / --interactive        M8 交互式训练向导（双击启动即向导；退出前等回车防闪退）
+//   --selftest-data               data loader cross-check (M5-1, host-only, no device/weights needed):
+//                                 --golden <m5 dir> --exp <M4 cache dir>
+//   --spike-train-ctx             single-ctx shared-param dual-graph spike (M5-2):
+//                                 --weights <G> --d-weights <D> --exp <cache> [--bucket T] [--steps N]
+//                                 (G-5.2a: two buffer_alloc_graph_tensors + measured memory/per-step loss)
+//   --selftest                    device enumeration + graph compute self-test (M0 smoke; explicit entry since M8-3)
+//   no arguments / --interactive        M8 interactive training wizard (double-click enters the wizard; waits for Enter before exit so the window does not flash-close)
 //
-// 退出码：0 = 成功；1 = 失败；2 = 参数错误。
+// Exit codes: 0 = success; 1 = failure; 2 = argument error.
 
 #include "traincpp/traincpp.h"
 
@@ -81,7 +81,7 @@
 #include <vector>
 
 #ifdef _WIN32
-// 控制台输出代码页切换用（与 main_prep.cpp 一致）；NOMINMAX 避免 windows.h 的 min/max 宏
+// For console output code page switching (same as main_prep.cpp); NOMINMAX avoids the windows.h min/max macros
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -95,7 +95,7 @@ using namespace traincpp;
 
 namespace {
 
-// ---------------------------------------------------------------- CRC32（与 zlib.crc32 兼容）
+// ---------------------------------------------------------------- CRC32 (compatible with zlib.crc32)
 
 uint32_t crc32_update(uint32_t crc, const uint8_t* p, size_t n) {
     static uint32_t table[256];
@@ -131,7 +131,7 @@ uint32_t crc32_tensor(const Tensor* t) {
     return crc ^ 0xFFFFFFFFu;
 }
 
-// ---------------------------------------------------------------- 设备
+// ---------------------------------------------------------------- Devices
 
 const char* device_type_name(DeviceType t) {
     switch (t) {
@@ -145,7 +145,7 @@ const char* device_type_name(DeviceType t) {
 
 void print_devices() {
     const size_t n = device_count();
-    std::printf("[rvc-train] traincpp 设备数: %zu\n", n);
+    std::printf("[rvc-train] traincpp device count: %zu\n", n);
     for (size_t i = 0; i < n; ++i) {
         const Device* d = device_get(i);
         const DeviceProps& p = d->props();
@@ -160,7 +160,7 @@ void print_devices() {
 Device* pick_device(int device_index, bool device_set) {
     if (device_set) {
         if (device_index < 0 || (size_t) device_index >= device_count()) {
-            std::printf("[rvc-train] 设备下标越界: %d（共 %zu 个）\n", device_index, device_count());
+            std::printf("[rvc-train] device index out of range: %d (of %zu)\n", device_index, device_count());
             return nullptr;
         }
         return device_get((size_t) device_index);
@@ -186,33 +186,33 @@ std::string join_path_simple(const std::string& dir, const std::string& name) {
     return dir + "\\" + name;
 }
 
-// 按配置创建 Trainer 并跑完整循环（--train 与 --interactive 共用）。
-// 设备选择：显式 CLI --device 优先，其次 config.run.device（>=0），否则自动。
+// Create a Trainer from the config and run the full loop (shared by --train and --interactive).
+// Device selection: explicit CLI --device first, then config.run.device (>=0), otherwise auto.
 int run_train_from_config(const rvc_train::train::TrainerConfig& cfg, int device_index,
                           bool device_set) {
     const bool use_device = device_set || cfg.device >= 0;
     const int idx = device_set ? device_index : (int) cfg.device;
     Device* dev = pick_device(idx, use_device);
     if (dev == nullptr) {
-        std::printf("[rvc-train] 无可用训练设备\n");
+        std::printf("[rvc-train] no usable training device\n");
         return 1;
     }
     std::string terr;
     rvc_train::train::Trainer* trainer = rvc_train::train::Trainer::create(cfg, dev, &terr);
     if (trainer == nullptr) {
-        std::printf("[rvc-train] Trainer 创建失败: %s\n", terr.c_str());
+        std::printf("[rvc-train] Trainer creation failed: %s\n", terr.c_str());
         return 1;
     }
     const bool ok = trainer->run(&terr);
     delete trainer;
     if (!ok) {
-        std::printf("[rvc-train] 训练失败: %s\n", terr.c_str());
+        std::printf("[rvc-train] training failed: %s\n", terr.c_str());
         return 1;
     }
     return 0;
 }
 
-// M7-2：从零训练时按 model_cfg 生成随机初始化训练态 GGUF，并回填 weights_g/weights_d。
+// M7-2: for from-scratch training, generate a randomly initialized training-state GGUF per model_cfg and fill in weights_g/weights_d.
 bool ensure_scratch_weights(rvc_train::train::TrainerConfig& cfg, std::string* err) {
     if (!cfg.scratch) {
         return true;
@@ -232,23 +232,23 @@ bool ensure_scratch_weights(rvc_train::train::TrainerConfig& cfg, std::string* e
     }
     cfg.weights_g = gp;
     cfg.weights_d = dp;
-    std::printf("[rvc-train] scratch 初始化已生成: %s / %s\n", gp.c_str(), dp.c_str());
+    std::printf("[rvc-train] scratch init generated: %s / %s\n", gp.c_str(), dp.c_str());
     return true;
 }
 
-// ---------------------------------------------------------------- M0 冒烟：c = a + b
+// ---------------------------------------------------------------- M0 smoke: c = a + b
 
 bool run_selftest(Device* dev) {
     if (dev == nullptr) {
-        std::printf("[rvc-train] 无可用设备\n");
+        std::printf("[rvc-train] no usable device\n");
         return false;
     }
     const DeviceProps& p = dev->props();
-    std::printf("[rvc-train] 后端: %s（%s）\n", p.name.c_str(), device_type_name(p.type));
+    std::printf("[rvc-train] backend: %s (%s)\n", p.name.c_str(), device_type_name(p.type));
 
     Context* ctx = context_new(1 << 20);
     if (ctx == nullptr) {
-        std::printf("[rvc-train] context_new 失败\n");
+        std::printf("[rvc-train] context_new failed\n");
         return false;
     }
 
@@ -264,7 +264,7 @@ bool run_selftest(Device* dev) {
 
     Buffer* buf = buffer_alloc_ctx_tensors(ctx, dev->default_buffer_type());
     if (buf == nullptr) {
-        std::printf("[rvc-train] 计算缓冲分配失败\n");
+        std::printf("[rvc-train] compute buffer allocation failed\n");
         graph_free(g);
         context_free(ctx);
         return false;
@@ -277,7 +277,7 @@ bool run_selftest(Device* dev) {
 
     const Tensor* unsupported = graph_first_unsupported(g, dev);
     if (unsupported != nullptr) {
-        std::printf("[rvc-train] 设备不支持节点: %s\n", unsupported->name);
+        std::printf("[rvc-train] device does not support node: %s\n", unsupported->name);
         buffer_free(buf);
         graph_free(g);
         context_free(ctx);
@@ -285,7 +285,7 @@ bool run_selftest(Device* dev) {
     }
 
     if (!dev->graph_compute(g)) {
-        std::printf("[rvc-train] graph_compute 失败\n");
+        std::printf("[rvc-train] graph_compute failed\n");
         buffer_free(buf);
         graph_free(g);
         context_free(ctx);
@@ -302,7 +302,7 @@ bool run_selftest(Device* dev) {
             ok = false;
         }
     }
-    std::printf("[rvc-train] a+b = [%.1f, %.1f, %.1f, %.1f]（期望 [11, 22, 33, 44]）\n",
+    std::printf("[rvc-train] a+b = [%.1f, %.1f, %.1f, %.1f] (expected [11, 22, 33, 44])\n",
                 cv[0], cv[1], cv[2], cv[3]);
 
     buffer_free(buf);
@@ -311,7 +311,7 @@ bool run_selftest(Device* dev) {
     return ok;
 }
 
-// ---------------------------------------------------------------- 训练态元数据打印（M1/M2 共用）
+// ---------------------------------------------------------------- training-state metadata printing (shared by M1/M2)
 
 void print_train_meta(const rvc_train::model::TrainMeta& meta, const char* tag) {
     std::printf("[%s] kind=%s version=%s has_f0=%d form=%s dtype=%s tensors=%lld\n", tag,
@@ -342,29 +342,29 @@ void print_train_meta(const rvc_train::model::TrainMeta& meta, const char* tag) 
     std::printf("]\n");
 }
 
-// ---------------------------------------------------------------- M1：GGUF 结构校验
+// ---------------------------------------------------------------- M1: GGUF structure validation
 
 int cmd_validate_gguf(const std::string& path) {
     const bool ok = gguf_validate(path.c_str());
     if (ok) {
-        std::printf("[validate-gguf] 结构校验通过: %s\n", path.c_str());
+        std::printf("[validate-gguf] structure validation passed: %s\n", path.c_str());
     } else {
-        std::printf("[validate-gguf] 结构校验失败: %s\n", path.c_str());
+        std::printf("[validate-gguf] structure validation failed: %s\n", path.c_str());
     }
     return ok ? 0 : 1;
 }
 
-// ---------------------------------------------------------------- M1：训练态 GGUF 装载自检
+// ---------------------------------------------------------------- M1: training-state GGUF load self-test
 
 int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_path) {
     std::string err;
     rvc_train::model::TrainWeights* w = rvc_train::model::TrainWeights::open(path, &err);
     if (w == nullptr) {
-        std::printf("[load-gguf] 打开失败: %s\n", err.c_str());
+        std::printf("[load-gguf] open failed: %s\n", err.c_str());
         return 1;
     }
     if (dev == nullptr) {
-        std::printf("[load-gguf] 无可用设备\n");
+        std::printf("[load-gguf] no usable device\n");
         delete w;
         return 1;
     }
@@ -375,12 +375,12 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
     print_train_meta(meta, "load-gguf");
 
     const DeviceProps& dp = dev->props();
-    std::printf("[load-gguf] backend = %s（%s）\n", dp.name.c_str(), device_type_name(dp.type));
+    std::printf("[load-gguf] backend = %s (%s)\n", dp.name.c_str(), device_type_name(dp.type));
 
     const int64_t n = w->tensor_count();
     Context* ctx = context_new((size_t) (n + 64) * 1024 + (1 << 20));
     if (ctx == nullptr) {
-        std::printf("[load-gguf] context_new 失败\n");
+        std::printf("[load-gguf] context_new failed\n");
         delete w;
         return 1;
     }
@@ -390,18 +390,18 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
         const char* name = w->tensor_name(i);
         tensors[(size_t) i] = w->new_tensor(ctx, name);
         if (tensors[(size_t) i] == nullptr) {
-            std::printf("[load-gguf] 创建张量失败: %s\n", name ? name : "(null)");
+            std::printf("[load-gguf] failed to create tensor: %s\n", name ? name : "(null)");
             context_free(ctx);
             delete w;
             return 1;
         }
     }
-    // 负向测试用哑张量（分配前创建，保证其有数据指针）
+    // dummy tensor for negative tests (created before allocation so it has a data pointer)
     Tensor* dummy_missing = new_tensor_1d(ctx, TYPE_F32, 4);
 
     Buffer* buf = buffer_alloc_ctx_tensors(ctx, dev->default_buffer_type());
     if (buf == nullptr) {
-        std::printf("[load-gguf] 计算缓冲分配失败（张量数 %lld）\n", (long long) n);
+        std::printf("[load-gguf] compute buffer allocation failed (%lld tensors)\n", (long long) n);
         context_free(ctx);
         delete w;
         return 1;
@@ -411,7 +411,7 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
     if (!dump_path.empty()) {
         dump.open(dump_path, std::ios::trunc);
         if (!dump.is_open()) {
-            std::printf("[load-gguf] 无法写 dump 文件: %s\n", dump_path.c_str());
+            std::printf("[load-gguf] cannot write dump file: %s\n", dump_path.c_str());
         }
     }
 
@@ -420,7 +420,7 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
         const char* name = w->tensor_name(i);
         err.clear();
         if (!w->load(tensors[(size_t) i], name, &err)) {
-            std::printf("[load-gguf] 装载失败: %s\n", err.c_str());
+            std::printf("[load-gguf] load failed: %s\n", err.c_str());
             ++failed;
             continue;
         }
@@ -438,22 +438,22 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
     }
     if (dump.is_open()) {
         dump.close();
-        std::printf("[load-gguf] 逐张量 CRC 清单已写: %s\n", dump_path.c_str());
+        std::printf("[load-gguf] per-tensor CRC manifest written: %s\n", dump_path.c_str());
     }
 
-    // 负向测试 1：缺失张量
+    // negative test 1: missing tensor
     bool neg_missing_ok = false;
     {
         std::string e;
         if (!w->load(dummy_missing, "__no_such_tensor__", &e) && !e.empty()) {
             neg_missing_ok = true;
-            std::printf("[load-gguf] 负向(缺失张量): 通过（%s）\n", e.c_str());
+            std::printf("[load-gguf] negative (missing tensor): passed (%s)\n", e.c_str());
         } else {
-            std::printf("[load-gguf] 负向(缺失张量): 失败\n");
+            std::printf("[load-gguf] negative (missing tensor): failed\n");
         }
     }
 
-    // 负向测试 2：形状不符（把张量 j 装进形状不同的张量 i）
+    // negative test 2: shape mismatch (load tensor j into tensor i with a different shape)
     bool neg_shape_ok = false;
     if (failed == 0) {
         for (int64_t i = 0; i < n && !neg_shape_ok; ++i) {
@@ -471,16 +471,16 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
                 std::string e;
                 if (!w->load(tensors[(size_t) i], w->tensor_name(j), &e) && !e.empty()) {
                     neg_shape_ok = true;
-                    std::printf("[load-gguf] 负向(形状不符): 通过（%s）\n", e.c_str());
+                    std::printf("[load-gguf] negative (shape mismatch): passed (%s)\n", e.c_str());
                 }
                 break;
             }
         }
         if (!neg_shape_ok) {
-            std::printf("[load-gguf] 负向(形状不符): 失败\n");
+            std::printf("[load-gguf] negative (shape mismatch): failed\n");
         }
     } else {
-        std::printf("[load-gguf] 负向(形状不符): 跳过（存在装载失败）\n");
+        std::printf("[load-gguf] negative (shape mismatch): skipped (load failures present)\n");
     }
 
     buffer_free(buf);
@@ -488,20 +488,20 @@ int cmd_load_gguf(const std::string& path, Device* dev, const std::string& dump_
     delete w;
 
     const bool ok = (failed == 0) && neg_missing_ok && neg_shape_ok;
-    std::printf("[load-gguf] 装载 %lld/%lld，负向测试 缺失=%s 形状=%s\n",
+    std::printf("[load-gguf] loaded %lld/%lld, negative tests missing=%s shape=%s\n",
                 (long long) (n - failed), (long long) n,
-                neg_missing_ok ? "通过" : "失败", neg_shape_ok ? "通过" : "失败");
+                neg_missing_ok ? "passed" : "failed", neg_shape_ok ? "passed" : "failed");
     if (ok) {
-        std::printf("[load-gguf] M1 装载自检通过\n");
+        std::printf("[load-gguf] M1 load self-test passed\n");
     } else {
-        std::printf("[load-gguf] M1 装载自检失败\n");
+        std::printf("[load-gguf] M1 load self-test failed\n");
     }
     return ok ? 0 : 1;
 }
 
-// ---------------------------------------------------------------- M2-1：无 --module 时的骨架自检
+// ---------------------------------------------------------------- M2-1: skeleton self-test when --module is absent
 
-// golden 目录的 manifest.json 读取（M2-1 仅打印摘要；正式解析在 M2-2 起接入）
+// read manifest.json from the golden directory (M2-1 only prints a summary; full parsing arrives in M2-2)
 void print_golden_manifest(const std::string& golden_dir) {
     std::string dir = golden_dir;
     while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) {
@@ -510,14 +510,14 @@ void print_golden_manifest(const std::string& golden_dir) {
     const std::string path = dir + "/manifest.json";
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
-        std::printf("[selftest-forward] golden manifest 不存在（M2-1 允许）: %s\n", path.c_str());
+        std::printf("[selftest-forward] golden manifest not found (allowed in M2-1): %s\n", path.c_str());
         return;
     }
     std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     f.close();
     const size_t kPreview = 300;
-    std::printf("[selftest-forward] golden manifest: %s（%zu 字节）\n", path.c_str(), content.size());
-    std::printf("[selftest-forward] 预览: %s%s\n", content.substr(0, kPreview).c_str(),
+    std::printf("[selftest-forward] golden manifest: %s (%zu bytes)\n", path.c_str(), content.size());
+    std::printf("[selftest-forward] preview: %s%s\n", content.substr(0, kPreview).c_str(),
                 content.size() > kPreview ? " ..." : "");
     size_t n_module = 0;
     size_t pos = 0;
@@ -525,20 +525,20 @@ void print_golden_manifest(const std::string& golden_dir) {
         ++n_module;
         pos += 8;
     }
-    std::printf("[selftest-forward] manifest 模块条目（粗计）: %zu\n", n_module);
+    std::printf("[selftest-forward] manifest module entries (rough count): %zu\n", n_module);
 }
 
 int cmd_selftest_forward(const std::string& weights_path, const std::string& golden_dir) {
-    std::printf("[selftest-forward] M2-1 骨架自检：建参 + check_expected + manifest 摘要（逐模块对拍用 --module）\n");
+    std::printf("[selftest-forward] M2-1 skeleton self-test: build params + check_expected + manifest summary (use --module for per-module cross-checks)\n");
     if (weights_path.empty()) {
-        std::printf("[selftest-forward] 缺少 --weights <train.gguf>\n");
+        std::printf("[selftest-forward] missing --weights <train.gguf>\n");
         return 2;
     }
 
     std::string err;
     rvc_train::model::TrainWeights* w = rvc_train::model::TrainWeights::open(weights_path, &err);
     if (w == nullptr) {
-        std::printf("[selftest-forward] 打开失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] open failed: %s\n", err.c_str());
         return 1;
     }
 
@@ -549,74 +549,74 @@ int cmd_selftest_forward(const std::string& weights_path, const std::string& gol
 
     const rvc_train::model::ModelConfig cfg = rvc_train::model::ModelConfig::from_meta(meta);
     if (!cfg.validate(&err)) {
-        std::printf("[selftest-forward] 配置校验失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] config validation failed: %s\n", err.c_str());
         delete w;
         return 1;
     }
-    std::printf("[selftest-forward] 配置校验通过（kind=%s version=%s has_f0=%d hop=%lld z_frames=%lld）\n",
+    std::printf("[selftest-forward] config validation passed (kind=%s version=%s has_f0=%d hop=%lld z_frames=%lld)\n",
                 cfg.kind.c_str(), cfg.version.c_str(), cfg.has_f0 ? 1 : 0,
                 (long long) cfg.hop_product(), (long long) cfg.z_frames());
 
     const int64_t n = w->tensor_count();
     Context* ctx = context_new((size_t) (n + 64) * 1024 + (1 << 20));
     if (ctx == nullptr) {
-        std::printf("[selftest-forward] context_new 失败\n");
+        std::printf("[selftest-forward] context_new failed\n");
         delete w;
         return 1;
     }
 
     rvc_train::model::ModelParams params;
     if (!params.build_all(ctx, *w, &err)) {
-        std::printf("[selftest-forward] 建参失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] parameter build failed: %s\n", err.c_str());
         context_free(ctx);
         delete w;
         return 1;
     }
 
-    std::printf("[selftest-forward] 参数张量: %lld（分组：", (long long) params.count());
+    std::printf("[selftest-forward] parameter tensors: %lld (groups: ", (long long) params.count());
     const std::vector<std::string>& groups = params.group_names();
     for (size_t i = 0; i < groups.size(); ++i) {
         std::printf("%s%s=%lld", i ? " " : "", groups[i].c_str(),
                     (long long) params.group_count(groups[i]));
     }
-    std::printf("）\n");
+    std::printf(")\n");
 
     std::vector<std::string> missing;
     std::vector<std::string> mismatched;
     w->check_expected(params.expected(), &missing, &mismatched);
-    std::printf("[selftest-forward] check_expected: 缺失=%zu 形状不符=%zu\n", missing.size(),
+    std::printf("[selftest-forward] check_expected: missing=%zu shape_mismatch=%zu\n", missing.size(),
                 mismatched.size());
     for (size_t i = 0; i < missing.size() && i < 5; ++i) {
-        std::printf("[selftest-forward]   缺失: %s\n", missing[i].c_str());
+        std::printf("[selftest-forward]   missing: %s\n", missing[i].c_str());
     }
     for (size_t i = 0; i < mismatched.size() && i < 5; ++i) {
-        std::printf("[selftest-forward]   形状不符: %s\n", mismatched[i].c_str());
+        std::printf("[selftest-forward]   shape mismatch: %s\n", mismatched[i].c_str());
     }
 
-    // M1 规则复核：emb_g 行数 == spk_embed_dim（转换器按实际值写元数据，这里只提示）
+    // M1 rule re-check: emb_g rows == spk_embed_dim (the converter writes metadata from actual values; this only warns)
     const Tensor* emb_g = params.find("emb_g.weight");
     if (emb_g != nullptr && cfg.spk_embed_dim > 0 && emb_g->ne[1] != cfg.spk_embed_dim) {
-        std::printf("[selftest-forward] 警告: emb_g.weight 行数=%lld 与 spk_embed_dim=%lld 不一致\n",
+        std::printf("[selftest-forward] warning: emb_g.weight rows=%lld does not match spk_embed_dim=%lld\n",
                     (long long) emb_g->ne[1], (long long) cfg.spk_embed_dim);
     }
 
     if (golden_dir.empty()) {
-        std::printf("[selftest-forward] 未提供 --golden，跳过 manifest 摘要（M2-1 允许）\n");
+        std::printf("[selftest-forward] --golden not provided, skipping manifest summary (allowed in M2-1)\n");
     } else {
         print_golden_manifest(golden_dir);
     }
 
     const bool ok = missing.empty() && mismatched.empty();
-    std::printf("[selftest-forward] %s\n", ok ? "骨架就绪" : "骨架自检失败");
+    std::printf("[selftest-forward] %s\n", ok ? "skeleton ready" : "skeleton self-test failed");
     context_free(ctx);
     delete w;
     return ok ? 0 : 1;
 }
 
-// M6：训练态 G GGUF → RVC-GGML 推理 GGUF（纯主机）
+// M6: training-state G GGUF -> RVC-GGML inference GGUF (host-only)
 int cmd_export_gguf(const std::string& in_path, const std::string& out_path) {
     if (in_path.empty() || out_path.empty()) {
-        std::printf("[export-gguf] 需要 --export-gguf <in.train.gguf> --out <out.gguf>\n");
+        std::printf("[export-gguf] requires --export-gguf <in.train.gguf> --out <out.gguf>\n");
         return 2;
     }
     rvc_train::exporter::ModelExportOptions opt;
@@ -624,7 +624,7 @@ int cmd_export_gguf(const std::string& in_path, const std::string& out_path) {
     opt.out_path = out_path;
     std::string err;
     if (!rvc_train::exporter::export_inference_gguf(opt, &err)) {
-        std::printf("[export-gguf] 失败: %s\n", err.c_str());
+        std::printf("[export-gguf] failed: %s\n", err.c_str());
         return 1;
     }
     return 0;
@@ -632,12 +632,12 @@ int cmd_export_gguf(const std::string& in_path, const std::string& out_path) {
 
 } // namespace
 
-// M8-3：双击启动（本进程独占控制台）时，退出前等一次回车，避免窗口闪退看不到输出。
-// 从已有终端（cmd/PowerShell/脚本）启动时控制台被多个进程共享，不暂停（不阻塞脚本）。
+// M8-3: on double-click launch (this process owns the console), wait for one Enter before exiting so the window does not flash-close before the output is visible.
+// when launched from an existing terminal (cmd/PowerShell/script) the console is shared by multiple processes, so do not pause (does not block scripts).
 static int pause_if_sole_console(int rc) {
     DWORD pids[2] = {0, 0};
     if (GetConsoleProcessList(pids, 2) == 1) {
-        std::printf("\n按回车键退出...");
+        std::printf("\nPress Enter to exit...");
         std::fflush(stdout);
         std::string line;
         std::getline(std::cin, line);
@@ -652,8 +652,8 @@ int main(int argc, char** argv) {
 
 int run_main(int argc, char** argv) {
 #ifdef _WIN32
-    // 源码/字符串为 UTF-8（/utf-8），把控制台输出/输入代码页切到 UTF-8，避免中文乱码
-    // （与 main_prep.cpp 一致）。
+    // Sources/strings are UTF-8 (/utf-8); switch the console output/input code pages to UTF-8 to avoid mojibake
+    // (same as main_prep.cpp).
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
 #endif
@@ -683,16 +683,16 @@ int run_main(int argc, char** argv) {
     bool train_mode        = false;
     std::string train_config_path;
     bool interactive_mode  = false;
-    bool selftest_m0       = false;  // M8-3：显式 --selftest 才跑 M0 冒烟（无参数=双击进向导）
+    bool selftest_m0       = false;  // M8-3: only run the M0 smoke with an explicit --selftest (no arguments = double-click enters the wizard)
     bool selftest_wizard   = false;
     bool selftest_scratch  = false;
     bool scratch_flag      = false;
-    std::string pretrain_g_path;    // --pretrain-g：等价 --weights（微调语义）
-    std::string pretrain_d_path;    // --pretrain-d：等价 --d-weights
-    std::string g_hashes_path;      // --g-hashes：scratch 自检 G 夹具
-    std::string d_hashes_path;      // --d-hashes：scratch 自检 D 夹具
-    std::string base_config_path;   // --config：向导/scratch 基础配置（可选）
-    std::string answers_path;       // --answers：向导答案文件（非交互/测试）
+    std::string pretrain_g_path;    // --pretrain-g: equivalent to --weights (finetune semantics)
+    std::string pretrain_d_path;    // --pretrain-d: equivalent to --d-weights
+    std::string g_hashes_path;      // --g-hashes: scratch self-test G fixture
+    std::string d_hashes_path;      // --d-hashes: scratch self-test D fixture
+    std::string base_config_path;   // --config: wizard/scratch base config (optional)
+    std::string answers_path;       // --answers: wizard answers file (non-interactive/test)
     std::string out_dir;
     std::string resume_path;
     std::string export_run_json;
@@ -706,10 +706,10 @@ int run_main(int argc, char** argv) {
     int64_t cli_epochs     = 0;
     int64_t cli_disc_len   = -1;
     int64_t cli_grad_accum = 0;
-    int64_t cli_pre_steps  = 0;   // M7-5：--selftest-resume 的存档前步数
-    int64_t cli_export_every  = -1;  // M7-4：-1=未指定
-    int64_t cli_snapshot_keep = -1;  // M7-4：-1=未指定
-    int64_t cli_save_interval = -1;  // M7-4：-1=未指定
+    int64_t cli_pre_steps  = 0;   // M7-5: pre-save steps for --selftest-resume
+    int64_t cli_export_every  = -1;  // M7-4: -1=not specified
+    int64_t cli_snapshot_keep = -1;  // M7-4: -1=not specified
+    int64_t cli_save_interval = -1;  // M7-4: -1=not specified
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--list-devices") == 0) {
@@ -814,8 +814,8 @@ int run_main(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--dump-grads") == 0 && i + 1 < argc) {
             dump_grads_dir = argv[++i];
         } else {
-            std::printf("[rvc-train] 未知参数: %s\n", argv[i]);
-            std::printf("用法: rvc-train（无参数=交互向导） [--list-devices] [--selftest] [--device N] [--validate-gguf FILE] "
+            std::printf("[rvc-train] unknown argument: %s\n", argv[i]);
+            std::printf("usage: rvc-train (no arguments = interactive wizard) [--list-devices] [--selftest] [--device N] [--validate-gguf FILE] "
                         "[--export-gguf FILE --out FILE] "
                         "[--load-gguf FILE [--dump-hashes FILE]] "
                         "[--selftest-forward [--weights FILE] [--golden DIR] [--module NAME]] "
@@ -845,12 +845,12 @@ int run_main(int argc, char** argv) {
             return 2;
         }
     }
-    // M8-3：无参数（双击启动）= 进交互向导；单独给 --answers 亦视作向导入口
+    // M8-3: no arguments (double-click launch) = enter the interactive wizard; --answers alone is also treated as a wizard entry
     if (argc <= 1 || (!answers_path.empty() && !interactive_mode)) {
         interactive_mode = true;
     }
     if (!dump_path.empty() && load_path.empty()) {
-        std::printf("[rvc-train] --dump-hashes 需要配合 --load-gguf\n");
+        std::printf("[rvc-train] --dump-hashes requires --load-gguf\n");
         return 2;
     }
     const bool any_selftest = selftest_forward || selftest_backward || selftest_loss ||
@@ -858,93 +858,93 @@ int run_main(int argc, char** argv) {
                               selftest_trainer || spike_train_ctx || selftest_grad_accum ||
                               selftest_resume;
     if (!golden_dir.empty() && !any_selftest) {
-        std::printf("[rvc-train] --golden 需要配合 --selftest-forward/--selftest-backward/--selftest-loss/--selftest-train-step/--selftest-data\n");
+        std::printf("[rvc-train] --golden requires --selftest-forward/--selftest-backward/--selftest-loss/--selftest-train-step/--selftest-data\n");
         return 2;
     }
     const bool any_model_selftest = selftest_forward || selftest_backward || selftest_loss;
     if (!module_name.empty() && !any_model_selftest) {
-        std::printf("[rvc-train] --module 需要配合 --selftest-forward/--selftest-backward/--selftest-loss\n");
+        std::printf("[rvc-train] --module requires --selftest-forward/--selftest-backward/--selftest-loss\n");
         return 2;
     }
     if (!exp_dir.empty() && !selftest_data && !spike_train_ctx && !train_mode &&
         !selftest_trainer && !selftest_grad_accum && !interactive_mode && !selftest_resume) {
-        std::printf("[rvc-train] --exp 需要配合 --selftest-data/--spike-train-ctx/--train/--selftest-trainer/--selftest-grad-accum/--interactive/--selftest-resume\n");
+        std::printf("[rvc-train] --exp requires --selftest-data/--spike-train-ctx/--train/--selftest-trainer/--selftest-grad-accum/--interactive/--selftest-resume\n");
         return 2;
     }
     if (selftest_data && (golden_dir.empty() || exp_dir.empty())) {
-        std::printf("[rvc-train] --selftest-data 需要 --golden <m5 目录> 与 --exp <M4 缓存目录>\n");
+        std::printf("[rvc-train] --selftest-data requires --golden <m5 dir> and --exp <M4 cache dir>\n");
         return 2;
     }
     if (!d_weights_path.empty() && !selftest_train_step && !selftest_train_loop &&
         !spike_train_ctx && !train_mode && !selftest_trainer && !selftest_grad_accum &&
         !interactive_mode && !selftest_resume) {
-        std::printf("[rvc-train] --d-weights 需要配合 --selftest-train-step/--selftest-train-loop/"
+        std::printf("[rvc-train] --d-weights requires --selftest-train-step/--selftest-train-loop/"
                     "--spike-train-ctx/--train/--selftest-trainer/--selftest-grad-accum/--interactive/--selftest-resume\n");
         return 2;
     }
     if (selftest_train_loop && (weights_path.empty() || d_weights_path.empty() ||
                                 golden_dir.empty())) {
-        std::printf("[rvc-train] --selftest-train-loop 需要 --weights <G> --d-weights <D> "
-                    "--golden <m5loop 目录>\n");
+        std::printf("[rvc-train] --selftest-train-loop requires --weights <G> --d-weights <D> "
+                    "--golden <m5loop dir>\n");
         return 2;
     }
     if (spike_train_ctx && (weights_path.empty() || d_weights_path.empty() || exp_dir.empty())) {
-        std::printf("[rvc-train] --spike-train-ctx 需要 --weights <G> --d-weights <D> --exp <缓存>\n");
+        std::printf("[rvc-train] --spike-train-ctx requires --weights <G> --d-weights <D> --exp <cache>\n");
         return 2;
     }
     if (!out_dir.empty() && !train_mode && !selftest_trainer && !export_gguf_mode &&
         !interactive_mode && !selftest_scratch && !selftest_resume) {
-        std::printf("[rvc-train] --out 需要配合 --train/--selftest-trainer/--export-gguf/--interactive/--selftest-scratch/--selftest-resume\n");
+        std::printf("[rvc-train] --out requires --train/--selftest-trainer/--export-gguf/--interactive/--selftest-scratch/--selftest-resume\n");
         return 2;
     }
     if (export_gguf_mode && out_dir.empty()) {
-        std::printf("[rvc-train] --export-gguf 需要 --out <输出推理 GGUF>\n");
+        std::printf("[rvc-train] --export-gguf requires --out <output inference GGUF>\n");
         return 2;
     }
     if ((!resume_path.empty() || !export_run_json.empty()) && !train_mode &&
         !interactive_mode) {
-        std::printf("[rvc-train] --resume/--export-run-json 需要配合 --train/--interactive\n");
+        std::printf("[rvc-train] --resume/--export-run-json requires --train/--interactive\n");
         return 2;
     }
     if (!answers_path.empty() && !interactive_mode) {
-        std::printf("[rvc-train] --answers 需要配合 --interactive\n");
+        std::printf("[rvc-train] --answers requires --interactive\n");
         return 2;
     }
     if (!base_config_path.empty() && !interactive_mode && !selftest_scratch && !selftest_trainer &&
         !selftest_resume) {
-        std::printf("[rvc-train] --config 需要配合 --interactive/--selftest-scratch/--selftest-trainer/"
+        std::printf("[rvc-train] --config requires --interactive/--selftest-scratch/--selftest-trainer/"
                     "--selftest-resume\n");
         return 2;
     }
     if ((!g_hashes_path.empty() || !d_hashes_path.empty()) && !selftest_scratch) {
-        std::printf("[rvc-train] --g-hashes/--d-hashes 需要配合 --selftest-scratch\n");
+        std::printf("[rvc-train] --g-hashes/--d-hashes requires --selftest-scratch\n");
         return 2;
     }
     if (scratch_flag && (!weights_path.empty() || !d_weights_path.empty())) {
-        std::printf("[rvc-train] --scratch 与 --weights/--d-weights 互斥\n");
+        std::printf("[rvc-train] --scratch is mutually exclusive with --weights/--d-weights\n");
         return 2;
     }
     if (scratch_flag && (!pretrain_g_path.empty() || !pretrain_d_path.empty())) {
-        std::printf("[rvc-train] --scratch 与 --pretrain-g/--pretrain-d 互斥\n");
+        std::printf("[rvc-train] --scratch is mutually exclusive with --pretrain-g/--pretrain-d\n");
         return 2;
     }
     if (scratch_flag && !train_mode && !interactive_mode) {
-        std::printf("[rvc-train] --scratch 需要配合 --train <config>/--interactive\n");
+        std::printf("[rvc-train] --scratch requires --train <config>/--interactive\n");
         return 2;
     }
     if ((!pretrain_g_path.empty() || !pretrain_d_path.empty()) && !train_mode && !interactive_mode) {
-        std::printf("[rvc-train] --pretrain-g/--pretrain-d 需要配合 --train/--interactive\n");
+        std::printf("[rvc-train] --pretrain-g/--pretrain-d requires --train/--interactive\n");
         return 2;
     }
     if (!pretrain_g_path.empty() && !weights_path.empty()) {
-        std::printf("[rvc-train] --pretrain-g 与 --weights 冲突\n");
+        std::printf("[rvc-train] --pretrain-g conflicts with --weights\n");
         return 2;
     }
     if (!pretrain_d_path.empty() && !d_weights_path.empty()) {
-        std::printf("[rvc-train] --pretrain-d 与 --d-weights 冲突\n");
+        std::printf("[rvc-train] --pretrain-d conflicts with --d-weights\n");
         return 2;
     }
-    // --pretrain-g/-d = 微调语义的 --weights/--d-weights 别名
+    // --pretrain-g/-d = finetune-semantics aliases for --weights/--d-weights
     if (!pretrain_g_path.empty()) {
         weights_path = pretrain_g_path;
     }
@@ -952,55 +952,55 @@ int run_main(int argc, char** argv) {
         d_weights_path = pretrain_d_path;
     }
     if (train_mode && train_config_path.empty()) {
-        std::printf("[rvc-train] --train 需要 <config.json>\n");
+        std::printf("[rvc-train] --train requires <config.json>\n");
         return 2;
     }
-    // --train 的 run.*（exp/out/pretrain_g/pretrain_d/device）可来自 config `run` 段或 CLI；
-    // CLI 非空时覆盖。缺失必填项由 Trainer::create 给出明确错误。
+    // --train run.* (exp/out/pretrain_g/pretrain_d/device) can come from the config `run` section or the CLI;
+    // non-empty CLI values override. Trainer::create reports missing required items explicitly.
     if (selftest_trainer && (weights_path.empty() || d_weights_path.empty() || exp_dir.empty() ||
                              out_dir.empty() || !steps_set)) {
-        std::printf("[rvc-train] --selftest-trainer 需要 --weights <G> --d-weights <D> --exp <缓存> "
-                    "--out <目录> --steps N\n");
+        std::printf("[rvc-train] --selftest-trainer requires --weights <G> --d-weights <D> --exp <cache> "
+                    "--out <dir> --steps N\n");
         return 2;
     }
     if (selftest_train_step && (weights_path.empty() || d_weights_path.empty())) {
-        std::printf("[rvc-train] --selftest-train-step 需要 --weights <G> 与 --d-weights <D>\n");
+        std::printf("[rvc-train] --selftest-train-step requires --weights <G> and --d-weights <D>\n");
         return 2;
     }
     if (selftest_train_step && golden_dir.empty()) {
-        std::printf("[rvc-train] --selftest-train-step 需要 --golden <m3 目录>\n");
+        std::printf("[rvc-train] --selftest-train-step requires --golden <m3 dir>\n");
         return 2;
     }
     if (selftest_grad_accum && (weights_path.empty() || d_weights_path.empty() || exp_dir.empty())) {
-        std::printf("[rvc-train] --selftest-grad-accum 需要 --weights <G> --d-weights <D> --exp <缓存>\n");
+        std::printf("[rvc-train] --selftest-grad-accum requires --weights <G> --d-weights <D> --exp <cache>\n");
         return 2;
     }
     if (selftest_resume && (weights_path.empty() || d_weights_path.empty() || exp_dir.empty() ||
                             out_dir.empty())) {
-        std::printf("[rvc-train] --selftest-resume 需要 --weights <G> --d-weights <D> --exp <缓存> "
-                    "--out <目录> [--steps N] [--pre-steps N] [--bucket T]\n");
+        std::printf("[rvc-train] --selftest-resume requires --weights <G> --d-weights <D> --exp <cache> "
+                    "--out <dir> [--steps N] [--pre-steps N] [--bucket T]\n");
         return 2;
     }
     if (cli_pre_steps != 0 && !selftest_resume) {
-        std::printf("[rvc-train] --pre-steps 需要配合 --selftest-resume\n");
+        std::printf("[rvc-train] --pre-steps requires --selftest-resume\n");
         return 2;
     }
     if (cli_grad_accum != 0 && !train_mode && !interactive_mode && !selftest_grad_accum &&
         !selftest_trainer) {
-        std::printf("[rvc-train] --grad-accum 需要配合 --train/--interactive/--selftest-grad-accum/--selftest-trainer\n");
+        std::printf("[rvc-train] --grad-accum requires --train/--interactive/--selftest-grad-accum/--selftest-trainer\n");
         return 2;
     }
     if ((cli_export_every >= 0 || cli_snapshot_keep >= 0 || cli_save_interval >= 0) &&
         !train_mode && !interactive_mode) {
-        std::printf("[rvc-train] --export-every/--snapshot-keep/--save-interval 需要配合 --train/--interactive\n");
+        std::printf("[rvc-train] --export-every/--snapshot-keep/--save-interval requires --train/--interactive\n");
         return 2;
     }
     if (!gradcheck_spec.empty() && !selftest_backward) {
-        std::printf("[rvc-train] --gradcheck 需要配合 --selftest-backward\n");
+        std::printf("[rvc-train] --gradcheck requires --selftest-backward\n");
         return 2;
     }
     if (!dump_grads_dir.empty() && !selftest_backward) {
-        std::printf("[rvc-train] --dump-grads 需要配合 --selftest-backward\n");
+        std::printf("[rvc-train] --dump-grads requires --selftest-backward\n");
         return 2;
     }
 
@@ -1010,7 +1010,7 @@ int run_main(int argc, char** argv) {
 
     if (selftest_scratch) {
         const std::string cfgp = base_config_path.empty() ? "configs/v1-40k-f0.json" : base_config_path;
-        // V2-2：hash 清单缺省时由 run_scratch_selftest 按 config 版本选择（v1→f0G/D40k；v2→f0G/D48k）
+        // V2-2: when the hash manifest is omitted, run_scratch_selftest chooses by config version (v1->f0G/D40k; v2->f0G/D48k)
         const std::string od = out_dir.empty() ? "work/scratch_selftest" : out_dir;
         return rvc_train::train::run_scratch_selftest(cfgp, g_hashes_path, d_hashes_path, od);
     }
@@ -1067,10 +1067,10 @@ int run_main(int argc, char** argv) {
         rvc_train::train::TrainerConfig cfg;
         std::string terr;
         if (!rvc_train::train::trainer_config_from_json(train_config_path, &cfg, &terr)) {
-            std::printf("[rvc-train] 读取训练配置失败: %s\n", terr.c_str());
+            std::printf("[rvc-train] failed to read training config: %s\n", terr.c_str());
             return 1;
         }
-        // CLI 非空时覆盖 config `run` 段（否则保留 config 值）
+        // Non-empty CLI values override the config `run` section (otherwise config values are kept)
         if (!weights_path.empty()) {
             cfg.weights_g = weights_path;
         }
@@ -1123,7 +1123,7 @@ int run_main(int argc, char** argv) {
             cfg.scratch = true;
         }
         if (!ensure_scratch_weights(cfg, &terr)) {
-            std::printf("[rvc-train] 生成 scratch 初始化失败: %s\n", terr.c_str());
+            std::printf("[rvc-train] scratch init generation failed: %s\n", terr.c_str());
             return 1;
         }
         return run_train_from_config(cfg, device_index, device_set);
@@ -1134,11 +1134,11 @@ int run_main(int argc, char** argv) {
         std::string terr;
         if (!base_config_path.empty()) {
             if (!rvc_train::train::trainer_config_from_json(base_config_path, &cfg, &terr)) {
-                std::printf("[rvc-train] 读取基础配置失败: %s\n", terr.c_str());
+                std::printf("[rvc-train] failed to read base config: %s\n", terr.c_str());
                 return 1;
             }
         }
-        // CLI 值作为向导默认值
+        // CLI values serve as wizard defaults
         if (!exp_dir.empty())        cfg.exp_dir = exp_dir;
         if (!weights_path.empty())   cfg.weights_g = weights_path;
         if (!d_weights_path.empty()) cfg.weights_d = d_weights_path;
@@ -1154,8 +1154,8 @@ int run_main(int argc, char** argv) {
         if (cli_export_every >= 0)   cfg.export_every = cli_export_every;
         if (cli_snapshot_keep >= 0)  cfg.snapshot_keep = cli_snapshot_keep;
         if (cli_save_interval >= 0)  cfg.save_interval = cli_save_interval;
-        // M8-1a：无 base config 时向导默认 = 用户验证稳定档（Q31：B=2/T=300/d=4800 独显
-        // 70+ epoch 稳定；默认定稿 384/1/12800 实测 7 小时仅 5 epoch 后崩溃）。CLI 覆盖优先。
+        // M8-1a: without a base config the wizard default = the user-validated stable profile (Q31: B=2/T=300/d=4800 on a discrete GPU
+        // stable for 70+ epochs; the default spec 384/1/12800 crashed after only 5 epochs in 7 hours). CLI overrides take precedence.
         if (base_config_path.empty()) {
             if (!bucket_set)      cfg.bucket = 300;
             if (cli_batch <= 0)   cfg.batch_size = 2;
@@ -1167,7 +1167,7 @@ int run_main(int argc, char** argv) {
                              : rvc_train::train::run_train_wizard_from_file(answers_path, std::cout,
                                                                             &cfg, &terr);
         if (!okw) {
-            std::printf("[rvc-train] 向导未完成: %s\n", terr.c_str());
+            std::printf("[rvc-train] wizard did not complete: %s\n", terr.c_str());
             return 1;
         }
         if (steps_set) {
@@ -1178,12 +1178,12 @@ int run_main(int argc, char** argv) {
         }
         const std::string cfg_path = join_path_simple(cfg.out_dir, "train_config.json");
         if (!rvc_train::train::trainer_config_write_json(cfg, cfg_path, &terr)) {
-            std::printf("[rvc-train] 写出训练配置失败: %s\n", terr.c_str());
+            std::printf("[rvc-train] failed to write training config: %s\n", terr.c_str());
             return 1;
         }
-        std::printf("[rvc-train] 向导配置已写出: %s\n", cfg_path.c_str());
+        std::printf("[rvc-train] wizard config written: %s\n", cfg_path.c_str());
         if (!ensure_scratch_weights(cfg, &terr)) {
-            std::printf("[rvc-train] 生成 scratch 初始化失败: %s\n", terr.c_str());
+            std::printf("[rvc-train] scratch init generation failed: %s\n", terr.c_str());
             return 1;
         }
         return run_train_from_config(cfg, device_index, device_set);
@@ -1227,21 +1227,21 @@ int run_main(int argc, char** argv) {
         return 0;
     }
     if (!selftest_m0) {
-        // M8-3：M0 冒烟改为显式 --selftest（无参数已进交互向导）
-        std::printf("[rvc-train] 未指定模式。提示:\n"
-                    "  rvc-train（无参数或 --interactive） 交互式训练向导\n"
-                    "  rvc-train --selftest                M0 设备/图计算自检\n"
-                    "  rvc-train --train <config.json>     按配置训练\n"
-                    "  详见 docs/使用指南.md\n");
+        // M8-3: the M0 smoke now requires an explicit --selftest (no arguments already enters the interactive wizard)
+        std::printf("[rvc-train] no mode specified. Hints:\n"
+                    "  rvc-train (no arguments or --interactive) interactive training wizard\n"
+                    "  rvc-train --selftest                M0 device/graph compute self-test\n"
+                    "  rvc-train --train <config.json>     train from a config\n"
+                    "  see docs/usage_guide.md\n");
         return 2;
     }
 
     Device* dev = pick_device(device_index, device_set);
     const bool ok = run_selftest(dev);
     if (ok) {
-        std::printf("[rvc-train] M0 自检通过\n");
+        std::printf("[rvc-train] M0 self-test passed\n");
     } else {
-        std::printf("[rvc-train] M0 自检失败\n");
+        std::printf("[rvc-train] M0 self-test failed\n");
     }
     return ok ? 0 : 1;
 }

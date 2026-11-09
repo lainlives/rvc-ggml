@@ -1,10 +1,10 @@
-// RVC-Train-GGML - SineGen 实现（src/model/sinegen.cpp）
+// RVC-Train-GGML - SineGen implementation (src/model/sinegen.cpp)
 //
-// 算法（harmonic_num=0，与 RVC-GGML src/rvc/sinegen.cpp 逐式一致）：
-//   rad = (max(f0,0)/sr) % 1（逐帧）
-//   cumulative = cumsum(rad) * upp，按 align_corners=True 线性插值到逐样本
-//   回绕检测：interp%1 连续下降处 phase -= 1（等价 Python 的 cumsum_shift）
-//   sine = sin(phase)·0.1；uv = f0 > 0；noise_amp = uv·0.003 + (1-uv)·0.1/3
+// Algorithm (harmonic_num=0, formula-by-formula identical to RVC-GGML src/rvc/sinegen.cpp):
+//   rad = (max(f0,0)/sr) % 1 (per frame)
+//   cumulative = cumsum(rad) * upp, linearly interpolated per-sample with align_corners=True
+//   wrap detection: where interp%1 decreases consecutively, phase -= 1 (equivalent to Python cumsum_shift)
+//   sine = sin(phase)·0.1; uv = f0 > 0; noise_amp = uv·0.003 + (1-uv)·0.1/3
 //   out = uv ? (sine + noise_amp·noise) : noise_amp·noise
 #include "model/sinegen.h"
 
@@ -45,7 +45,7 @@ std::vector<float> sinegen_generate(const float* f0, int64_t frames, int sample_
         noise_data = noise_buf.data();
     }
 
-    // 逐帧相位增量与累积（cumsum * upp）
+    // Per-frame phase increment and accumulation (cumsum * upp)
     std::vector<double> cumulative(static_cast<size_t>(frames), 0.0);
     double running = 0.0;
     for (int64_t t = 0; t < frames; ++t) {
@@ -54,7 +54,7 @@ std::vector<float> sinegen_generate(const float* f0, int64_t frames, int sample_
         cumulative[static_cast<size_t>(t)] = running * static_cast<double>(upp);
     }
 
-    // align_corners=True 线性插值：pos = i * (frames-1) / (total-1)
+    // align_corners=True linear interpolation: pos = i * (frames-1) / (total-1)
     auto interpolate = [&](int64_t i) -> double {
         if (total <= 1 || frames <= 1) {
             return cumulative[0];
@@ -77,7 +77,7 @@ std::vector<float> sinegen_generate(const float* f0, int64_t frames, int sample_
         const double interp = interpolate(i);
         const double mod = interp - std::floor(interp);
         if (i > 0 && (mod - prev_mod) < 0.0) {
-            phase -= 1.0;    // 相位回绕补偿（等价 Python 的 cumsum_shift）
+            phase -= 1.0;    // phase wrap compensation (equivalent to Python cumsum_shift)
         }
         prev_mod = mod;
         phase += static_cast<double>(base_rad);

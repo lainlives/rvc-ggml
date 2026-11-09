@@ -1,7 +1,7 @@
 // text_encoder.cpp
-// RVC enc_p（TextEncoder）：
+// RVC enc_p (TextEncoder):
 //   emb_phone + emb_pitch -> ×sqrt(H) -> LeakyReLU(0.1)
-//   -> N × [相对位置多头自注意力 + LayerNorm + FFN(k=3,ReLU) + LayerNorm]
+//   -> N × [relative-position multi-head self-attention + LayerNorm + FFN(k=3,ReLU) + LayerNorm]
 //   -> proj(1x1) -> stats [2*inter, T]
 
 #include "vits/synthesizer.h"
@@ -21,20 +21,20 @@ namespace {
     ggml_tensor* require(const GgufModel& model, const std::string& name) {
         ggml_tensor* t = model.weight(name);
         if (!t) {
-            throw std::runtime_error("VITS 缺失权重: " + name);
+            throw std::runtime_error("VITS missing weight: " + name);
         }
         return t;
     }
 
-    // 展开相对位置嵌入（对齐 attentions.py _get_relative_embeddings）
-    //   emb: [2W+1, D]（原始窗口）；输出对 T 帧的有效窗口：
-    //   transposed=false -> [2T-1, D]（rel_k 用）；true -> [D, 2T-1]（rel_v 用）
+    // Expand relative-position embeddings (aligned with attentions.py _get_relative_embeddings)
+    //   emb: [2W+1, D] (original window); output is the effective window for T frames:
+    //   transposed=false -> [2T-1, D] (for rel_k); true -> [D, 2T-1] (for rel_v)
     std::vector<float> expand_relative_embedding(const std::vector<float>& emb,
         int64_t T, int64_t D, int64_t window, bool transposed) {
         const int64_t src_positions = 2 * window + 1;
         const int64_t relative_positions = 2 * T - 1;
         if (static_cast<int64_t>(emb.size()) != src_positions * D) {
-            throw std::runtime_error("相对位置嵌入尺寸不匹配");
+            throw std::runtime_error("relative-position embedding size mismatch");
         }
         const int64_t pad_length = std::max<int64_t>(T - (window + 1), 0);
         const int64_t slice_start = std::max<int64_t>((window + 1) - T, 0);
@@ -57,7 +57,7 @@ namespace {
         return out;
     }
 
-    // 相对位置注意力（单层，逐头小 matmul）
+    // Relative-position attention (single layer, per-head small matmul)
     ggml_tensor* attention_layer(ggml_context* ctx, const GgufModel& model,
         const Config& cfg, ggml_tensor* x, int64_t layer, int64_t T,
         std::vector<GraphInput>& constants) {
@@ -73,7 +73,7 @@ namespace {
         ggml_tensor* v = conv1d_ct(ctx, x, require(model, prefix + ".conv_v.weight"),
             require(model, prefix + ".conv_v.bias"), 1, 0, 1, cfg.conv_flat);
 
-        // 相对位置嵌入常量（每层独立权重）
+        // Relative-position embedding constants (independent weights per layer)
         const auto emb_k = model.read_f32(prefix + ".emb_rel_k");
         const auto emb_v = model.read_f32(prefix + ".emb_rel_v");
         ggml_tensor* rel_k = make_const_f32(ctx, D, 2 * T - 1, "rel_k");
@@ -93,10 +93,10 @@ namespace {
 
             // scores[tk,tq] = sum_d k[d,tk] * q_s[d,tq]
             ggml_tensor* scores = ggml_mul_mat(ctx, k_h, q_s);          // [Tk, Tq]
-            // 相对 logits[rel,tq] = sum_d rel_k[d,rel] * q_s[d,tq]
+            // relative logits[rel,tq] = sum_d rel_k[d,rel] * q_s[d,tq]
             ggml_tensor* rel_logits = ggml_mul_mat(ctx, rel_k, q_s);    // [2T-1, Tq]
             scores = add_checked(ctx, scores, relative_to_absolute(ctx, rel_logits, T, 1, D));
-            ggml_tensor* p_attn = ggml_soft_max(ctx, scores);           // 沿 ne0=Tk 归一化
+            ggml_tensor* p_attn = ggml_soft_max(ctx, scores);           // normalized along ne0=Tk
 
             // out[d,tq] = sum_tk v[d,tk] * p[tk,tq]
             ggml_tensor* v_t = ggml_cont(ctx, ggml_transpose(ctx, v_h));    // [Tk, D]
@@ -110,7 +110,7 @@ namespace {
             require(model, prefix + ".conv_o.bias"), 1, 0, 1, cfg.conv_flat);
     }
 
-    // FFN（k=3，same padding，ReLU）
+    // FFN (k=3, same padding, ReLU)
     ggml_tensor* ffn_layer(ggml_context* ctx, const GgufModel& model,
         const Config& cfg, ggml_tensor* x, int64_t layer) {
         const std::string prefix = "enc_p.encoder.ffn_layers." + std::to_string(layer);
@@ -136,7 +136,7 @@ ggml_tensor* build_text_encoder_stats(ggml_context* ctx, const GgufModel& model,
 
     if (cfg.has_f0) {
         if (pitch_i32 == nullptr) {
-            throw std::runtime_error("VITS: has_f0 但未提供 pitch 输入");
+            throw std::runtime_error("VITS: has_f0 is set but no pitch input was provided");
         }
         ggml_tensor* pitch = get_rows(ctx, require(model, "enc_p.emb_pitch.weight"), pitch_i32);
         x = add_checked(ctx, x, pitch);

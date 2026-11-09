@@ -1,9 +1,9 @@
-﻿// feat.cpp —— M4-3 HuBERT 特征实现（自建执行器；修正 RVC-GGML pad1d 未初始化零张量问题，Q22）
+﻿// feat.cpp -- M4-3 HuBERT feature implementation (self-built executor; fixes the RVC-GGML pad1d uninitialized zero-tensor issue, Q22)
 //
-// 结构照 RVC-GGML `src/hubert/hubert.cpp::HubertEncoder`（按长度缓存图、输出三选一），
-// 但图构建/分配改用 rvc_core 公共 API，并增加 `zero_pads()`：每次 compute 前把图中
-// **未初始化的零常量叶子**（RVC-GGML pad1d 的 pad_l/pad_r）显式清零——其原实现依赖
-// "新缓冲为零"，重复 compute 后被 gallocr 复用缓冲污染 → 静默漂移（详见 feat.h 与 Q22 报告）。
+// Structure mirrors RVC-GGML `src/hubert/hubert.cpp::HubertEncoder` (graph cached by length, one of three outputs),
+// but graph build/allocation uses the rvc_core public API, plus a `zero_pads()` addition: before every compute,
+// the **uninitialized zero-constant leaves** in the graph (pad_l/pad_r of RVC-GGML pad1d) are explicitly zeroed -- the
+// original implementation relies on "fresh buffers are zero", and after repeated computes the gallocr-reused buffers pollute them -> silent drift (see feat.h and the Q22 report).
 
 #include "prep/feat.h"
 
@@ -26,7 +26,7 @@ struct HubertFeatureExtractor::Impl {
     ggml_tensor* out_proj = nullptr;
     ggml_tensor* out_l9 = nullptr;
     ggml_tensor* out_l12 = nullptr;
-    std::vector<ggml_tensor*> pad_tensors;  // 图内 "pad_*" 零常量叶子（每次 compute 前清零）
+    std::vector<ggml_tensor*> pad_tensors;  // "pad_*" zero-constant leaves in the graph (zeroed before every compute)
 };
 
 HubertFeatureExtractor::HubertFeatureExtractor(const GgufModel& model, ggml_backend_t backend)
@@ -54,10 +54,10 @@ void HubertFeatureExtractor::build(int64_t samples) {
         im.runner->expand(t);
     }
 
-    // 收集"未初始化零常量叶子"（在 allocate 前：此 ctx 为 no_alloc，所有图内新建张量
-    // buffer==nullptr；模型权重已在自己 buffer 中）。RVC-GGML pad1d 的 pad_l/pad_r 是
-    // 其中**会被读取**的两个；按 src 遍历即可发现，且不依赖张量名（ggml 会把叶子名改写成
-    // "leaf_N"）。im2col 的形状占位张量也会被收集，但清零它无副作用（只读形状）。
+    // Collect the "uninitialized zero-constant leaves" (before allocate: this ctx is no_alloc, so all tensors
+    // created in-graph have buffer==nullptr; model weights already live in their own buffer). RVC-GGML pad1d's pad_l/pad_r are
+    // two of them that **get read**; walking src finds them and does not depend on tensor names (ggml rewrites leaf names
+    // to "leaf_N"). im2col's shape-placeholder tensors are also collected, but zeroing them has no side effects (shape is read-only).
     im.pad_tensors.clear();
     ggml_cgraph* g = im.runner->graph();
     const int n_nodes = ggml_graph_n_nodes(g);
@@ -76,10 +76,10 @@ void HubertFeatureExtractor::build(int64_t samples) {
     }
     if (im.pad_tensors.empty()) {
         std::fprintf(stderr,
-                     "[rvc-prep] 警告：HuBERT 图未发现未初始化零常量叶子（RVC-GGML 实现可能已变化）\n");
+                     "[rvc-prep] warning: no uninitialized zero-constant leaves found in the HuBERT graph (the RVC-GGML implementation may have changed)\n");
     }
     if (!im.runner->allocate()) {
-        throw std::runtime_error("HuBERT 图缓冲分配失败");
+        throw std::runtime_error("failed to allocate HuBERT graph buffers");
     }
     im.built_samples = samples;
 }

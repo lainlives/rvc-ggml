@@ -1,5 +1,5 @@
 // audio_io.cpp
-// WAV 读写与重采样实现（dr_wav + 多相 FIR 重采样）
+// WAV read/write and resampling implementation (dr_wav + polyphase FIR resampling)
 
 #define DR_WAV_IMPLEMENTATION
 #include "dr_wav.h"
@@ -16,7 +16,7 @@ namespace {
     constexpr double kPi = 3.141592653589793238462643383279502884;
 
     // ----------------------------------------------------------
-    // Kaiser 窗函数（I0 级数展开），用于重采样低通滤波器
+    // Kaiser window function (I0 series expansion), used for the resampling low-pass filter
     // ----------------------------------------------------------
     double bessel_i0(double x) {
         double sum = 1.0;
@@ -46,23 +46,23 @@ namespace {
         return a < 0 ? -a : a;
     }
 
-    // 有理比多相 FIR 重采样：
-    //   dst/src = D/U（U 上采样、D 抽取）
-    //   理想低通截止 fc = 0.95 * min(src,dst)，Kaiser(beta=7.865) 窗，长度 L = 11 个源样本
-    //   系数表 [U][2H+1]，H 为 max(U,D) 域半宽
+    // Rational-ratio polyphase FIR resampling:
+    //   dst/src = D/U (U = upsampling, D = decimation)
+    //   ideal low-pass cutoff fc = 0.95 * min(src,dst), Kaiser(beta=7.865) window, length L = 11 source samples
+    //   coefficient table [U][2H+1], H is the half-width in the max(U,D) domain
     std::vector<float> windowed_sinc_resample(
         const std::vector<float>& in, int src_sr, int dst_sr) {
         if (src_sr <= 0 || dst_sr <= 0) {
-            throw std::runtime_error("重采样采样率必须为正");
+            throw std::runtime_error("Resampling sample rates must be positive");
         }
         if (src_sr == dst_sr || in.empty()) {
             return in;
         }
         const int64_t g = gcd_i64(src_sr, dst_sr);
-        const int64_t U = dst_sr / g;   // 上采样因子
-        const int64_t D = src_sr / g;   // 抽取因子
+        const int64_t U = dst_sr / g;   // upsampling factor
+        const int64_t D = src_sr / g;   // decimation factor
         if (U > 512) {
-            // 采样率比过离谱，直接线性插值兜底
+            // Sample-rate ratio is too extreme; fall back to plain linear interpolation
             const int64_t n = static_cast<int64_t>(in.size());
             const int64_t out_len = std::max<int64_t>(1, static_cast<int64_t>(std::llround(n * static_cast<double>(dst_sr) / src_sr)));
             std::vector<float> out(static_cast<size_t>(out_len));
@@ -78,20 +78,20 @@ namespace {
         }
 
         const double fs_max = static_cast<double>(std::max(U, D));
-        const double fc = 0.95 * static_cast<double>(std::min(src_sr, dst_sr)) / fs_max; // 中间域归一化截止 (0..0.5)
+        const double fc = 0.95 * static_cast<double>(std::min(src_sr, dst_sr)) / fs_max; // normalized cutoff in the intermediate domain (0..0.5)
         const double beta = 7.865;
-        const int64_t L = 11;                       // 单边零交叉数（源样本域）
-        const int64_t H = static_cast<int64_t>(std::ceil(L * U)); // 中间域半宽
+        const int64_t L = 11;                       // one-sided zero-crossing count (source sample domain)
+        const int64_t H = static_cast<int64_t>(std::ceil(L * U)); // intermediate-domain half-width
         const int64_t ntaps = 2 * H + 1;
 
-        // 系数表 [U][ntaps]：phase p 对应输入样本剩余偏移 p/U
+        // Coefficient table [U][ntaps]: phase p corresponds to the remaining input-sample offset p/U
         std::vector<double> phase_coef(static_cast<size_t>(U) * ntaps, 0.0);
         for (int64_t p = 0; p < U; ++p) {
             double* row = phase_coef.data() + static_cast<size_t>(p) * ntaps;
             double sum = 0.0;
             for (int64_t k = 0; k < ntaps; ++k) {
                 const double t = static_cast<double>(k - H) - static_cast<double>(p) / U;
-                // sinc(2*fc*t)（归一化频率）
+                // sinc(2*fc*t) (normalized frequency)
                 const double x = 2.0 * fc * t;
                 const double sinc = (std::abs(x) < 1e-12) ? 1.0 : std::sin(kPi * x) / (kPi * x);
                 const double w = kaiser(t, static_cast<double>(H) / U, beta);
@@ -99,11 +99,11 @@ namespace {
                 sum += row[k];
             }
             if (sum != 0.0) {
-                for (int64_t k = 0; k < ntaps; ++k) row[k] /= sum;   // DC 归一化
+                for (int64_t k = 0; k < ntaps; ++k) row[k] /= sum;   // DC normalization
             }
         }
 
-        // 反射填充，避免边界黑边；中心位于 H
+        // Reflection padding to avoid edge artifacts; center at H
         const int64_t n = static_cast<int64_t>(in.size());
         std::vector<float> padded(static_cast<size_t>(n + 2 * H));
         for (int64_t i = 0; i < H; ++i) {
@@ -122,7 +122,7 @@ namespace {
             n * static_cast<double>(dst_sr) / src_sr)));
         std::vector<float> out(static_cast<size_t>(out_len));
 
-        // 输出样本 i 对应中间域位置 m0 = i*D；最近输入样本 j0 = floor(m0/U)，相位 p = m0 - j0*U
+        // Output sample i maps to intermediate-domain position m0 = i*D; nearest input sample j0 = floor(m0/U), phase p = m0 - j0*U
         for (int64_t i = 0; i < out_len; ++i) {
             const int64_t m0 = i * D;
             int64_t j0 = m0 / U;
@@ -143,7 +143,7 @@ namespace {
 AudioData load_wav(const std::string& filepath) {
     drwav wav;
     if (!drwav_init_file(&wav, filepath.c_str(), nullptr)) {
-        throw std::runtime_error("无法打开 WAV 文件: " + filepath);
+        throw std::runtime_error("Cannot open WAV file: " + filepath);
     }
 
     AudioData audio;
@@ -153,7 +153,7 @@ AudioData load_wav(const std::string& filepath) {
 
     if (audio.num_channels <= 0 || audio.total_samples == 0) {
         drwav_uninit(&wav);
-        throw std::runtime_error("WAV 文件为空或声道数无效: " + filepath);
+        throw std::runtime_error("WAV file is empty or has an invalid channel count: " + filepath);
     }
 
     audio.samples.resize(static_cast<size_t>(audio.total_samples) * audio.num_channels);
@@ -162,7 +162,7 @@ AudioData load_wav(const std::string& filepath) {
     drwav_uninit(&wav);
 
     if (frames_read == 0) {
-        throw std::runtime_error("读取 WAV 数据失败: " + filepath);
+        throw std::runtime_error("Failed to read WAV data: " + filepath);
     }
     audio.total_samples = frames_read;
     audio.samples.resize(static_cast<size_t>(frames_read) * audio.num_channels);
@@ -186,7 +186,7 @@ bool save_wav(const std::string& filepath,
         return false;
     }
 
-    // float -> int16（钳位）
+    // float -> int16 (clamped)
     std::vector<drwav_int16> pcm(static_cast<size_t>(total_samples) * num_channels);
     for (size_t i = 0; i < pcm.size(); ++i) {
         float v = samples[i];

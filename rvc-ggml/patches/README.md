@@ -1,43 +1,46 @@
-# RVC-GGML 对 ggml 源码的修改（本地补丁）
+# RVC-GGML modifications to the ggml source (local patch)
 
-本项目使用的 ggml **不是官方原版**：为了让 **48 kHz 角色模型**与**超长音频**在 Vulkan 上不崩溃，
-需要对官方 ggml 源码做一处必要修改。升级/更换 ggml 源码后**必须重新应用本补丁**，
-否则长音频会再次触发 `maxComputeWorkGroupCount` 断言。
+The ggml used by this project is **not the official upstream**: to keep **48 kHz character models**
+and **very long audio** from crashing on Vulkan, one necessary change to the official ggml source
+is required. After upgrading/replacing the ggml source you **must re-apply this patch**, or long
+audio will trigger the `maxComputeWorkGroupCount` assertion again.
 
-> 通过 FetchContent 自动获取 ggml 时（见根 `CMakeLists.txt` 的依赖解析），构建系统会
-> 自动应用本补丁，无需手动操作；以下手动方法适用于使用本地 ggml 源码的场景。
+> When ggml is fetched automatically via FetchContent (see the dependency resolution in the root
+> `CMakeLists.txt`), the build system applies this patch automatically, no manual step needed; the
+> manual method below applies to the scenario of using a local ggml source tree.
 
-## 补丁文件
+## Patch file
 
 - `ggml-vulkan-matmul-n-split.patch`
-  - 目标文件：`src/ggml-vulkan/ggml-vulkan.cpp`（函数 `ggml_vk_mul_mat`，新增 `ggml_vk_mul_mat_q_f16_m_split`）
-  - 基线：官方 ggml v0.23.0（该文件 20349 行；补丁后 20382 行，净增 33 行）
+  - target file: `src/ggml-vulkan/ggml-vulkan.cpp` (function `ggml_vk_mul_mat`, adds `ggml_vk_mul_mat_q_f16_m_split`)
+  - baseline: official ggml v0.23.0 (20349 lines in that file; 20382 after the patch, a net increase of 33 lines)
 
-## 应用方法
+## How to apply
 
-在 ggml 源码树根目录执行（补丁路径按实际位置调整）：
+Run from the root of the ggml source tree (adjust the patch path to its actual location):
 
 ```powershell
-# 有 git 时
-git apply -p1 <路径>\RVC-GGML\patches\ggml-vulkan-matmul-n-split.patch
-# 或 GNU patch
-patch -p1 < <路径>\RVC-GGML\patches\ggml-vulkan-matmul-n-split.patch
+# If you have git
+git apply -p1 <path>\RVC-GGML\patches\ggml-vulkan-matmul-n-split.patch
+# Or GNU patch
+patch -p1 < <path>\RVC-GGML\patches\ggml-vulkan-matmul-n-split.patch
 ```
 
-若 ggml 版本升级导致补丁无法直接应用，请按下方“修改说明”手动合并
-（参考补丁中的上下文：把新增函数插到 `ggml_vk_mul_mat` 之前，并用新调用替换原 `needs_split` 分支里的 M 切分内联代码）。
+If a ggml version upgrade prevents the patch from applying directly, merge the changes manually as
+described in Change details below (using the patch context as reference: insert the new function
+before `ggml_vk_mul_mat`, and replace the inline M-split code in the original `needs_split` branch with the new call).
 
-## 背景
+## Background
 
-ggml 的 Vulkan 矩阵乘 `ggml_vk_matmul` 只对 batch/z 维切分，**N 维从不切分**；
-shader 的 Y 方向 workgroup 数受 `maxComputeWorkGroupCount[1]`（Vulkan 最低保证 65535）限制。
-矩阵乘按 `ceil(N / wg_denoms[1])` 分发（本项目相关路径 `wg_denoms[1] = 32`），因此当
+ggml's Vulkan matmul `ggml_vk_matmul` only splits the batch/z dimension and **never splits the N dimension**;
+the number of workgroups in the shader's Y direction is limited by `maxComputeWorkGroupCount[1]` (Vulkan minimum guarantee 65535).
+Matmul is dispatched by `ceil(N / wg_denoms[1])` (this project's relevant path has `wg_denoms[1] = 32`), so when
 
 ```
 N > 65535 × 32 = 2,097,120
 ```
 
-时会在 `ggml_vulkan.cpp:8617` 触发：
+it triggers the following at `ggml_vulkan.cpp:8617`:
 
 ```
 GGML_ASSERT(wg0 <= ... maxComputeWorkGroupCount[0] &&
@@ -45,29 +48,29 @@ GGML_ASSERT(wg0 <= ... maxComputeWorkGroupCount[0] &&
             wg2 <= ... maxComputeWorkGroupCount[2]) failed
 ```
 
-官方 ggml（含当前 master）只处理了超大 **M**（`maxStorageBufferRange` 限制），没有 N 切分。
+Official ggml (including current master) only handles oversized **M** (the `maxStorageBufferRange` limit) and has no N split.
 
-## 触发场景（修复前必崩）
+## Trigger scenarios (guaranteed crash before the fix)
 
-| 场景 | N 的构成 | 超限阈值 |
+| Scenario | N composition | Overflow threshold |
 |---|---|---|
-| VITS 生成器末级卷积（48 kHz，hop=480） | `VITS 帧数 × 480` | 单块 > 4369 帧（约 43.7 s） |
-| VITS 生成器末级卷积（40 kHz，hop=400） | `VITS 帧数 × 400` | 单块 > 5242 帧（约 52.4 s，接近分块上限，属侥幸未炸） |
-| RMVPE 整段（非窗口）推理的展平卷积 | `128 × 帧数` | 帧数 > 16384（约 163.8 s） |
+| VITS generator final-stage convolution (48 kHz, hop=480) | `VITS frames × 480` | single chunk > 4369 frames (~43.7 s) |
+| VITS generator final-stage convolution (40 kHz, hop=400) | `VITS frames × 400` | single chunk > 5242 frames (~52.4 s, close to the chunk limit, survived by luck) |
+| Flattened convolution of RMVPE whole-segment (non-windowed) inference | `128 × frames` | frames > 16384 (~163.8 s) |
 
-## 修改内容（`ggml_vk_mul_mat`）
+## Change details (`ggml_vk_mul_mat`)
 
-1. 入口新增 N 切分：当 `dst->ne[2]==1 && dst->ne[3]==1 && dst->ne[1] > maxWGC[1]*32` 时，
-   每 `maxWGC[1]*32` 列一块；用 `view_offs += n_offset * nb[1]` 构造 `dst` / `src1` 视图后逐块计算。
-   （32 是所有 matmul pipeline 中最小的 `wg_denoms[1]`，取它可保证任意 pipeline 都不超限。）
-2. 每块内禁用 split_k（`disable_split_k=true`），避免 split_k 归约网格 `m*n*batch` 再次超限。
-3. 原有 M 切分内联代码抽成 `ggml_vk_mul_mat_q_f16_m_split`，N 切分块与普通路径共用。
-4. 纯 dispatch 划分，不改变任何算子数学；仅在 N 超限时生效（短音频/小模型行为完全不变）。
+1. N split added at the entry point: when `dst->ne[2]==1 && dst->ne[3]==1 && dst->ne[1] > maxWGC[1]*32`,
+   split into chunks of `maxWGC[1]*32` columns; `dst` / `src1` views are built with `view_offs += n_offset * nb[1]` and computed chunk by chunk.
+   (32 is the smallest `wg_denoms[1]` among all matmul pipelines; taking it guarantees no pipeline exceeds the limit.)
+2. split_k is disabled inside each chunk (`disable_split_k=true`), to avoid the split_k reduction grid `m*n*batch` exceeding the limit again.
+3. The existing inline M-split code is extracted into `ggml_vk_mul_mat_q_f16_m_split`, shared by the N-split chunks and the normal path.
+4. Pure dispatch partitioning; no operator math is changed; it takes effect only when N exceeds the limit (short-audio / small-model behavior is completely unchanged).
 
-## 验证（2026-09-17）
+## Validation (2026-09-17)
 
-- **强制切分**（阈值临时降到 65535 列）下，VITS v1/v2 自检的 corr/SNR 与未切分**逐位一致**；RMVPE 302 s 通过
-- 短样本回归：RMVPE 5 s、VITS v1/v2、e2e（Vulkan）全部通过
-- GPU 实测：48 kHz 模型 + 204 s 长音频完整转换通过（修复前第二块即断言）
+- With **forced splitting** (threshold temporarily lowered to 65535 columns), VITS v1/v2 self-test corr/SNR is **bit-identical** to the unsplit path; RMVPE 302 s passes
+- Short-sample regression: RMVPE 5 s, VITS v1/v2 and e2e (Vulkan) all pass
+- Measured on GPU: 48 kHz model + 204 s long audio full conversion passes (before the fix, the second chunk already tripped the assertion)
 
-详细技术说明见 `docs\技术文档二_ggml_Vulkan实现细节.md` 第五节（5.5）。
+See Section 5 (5.5) of `docs/technical_02_ggml_vulkan_details.md` for detailed technical notes.

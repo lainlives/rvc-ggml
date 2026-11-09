@@ -1,13 +1,13 @@
-// model_gguf.h —— M6：把训练态 G GGUF 导出为 RVC-GGML 可读推理 GGUF
+// model_gguf.h -- M6: export training-state G GGUF as an RVC-GGML-readable inference GGUF
 //
-// 约定（逐条对照 RVC-GGML/scripts/export_gguf.py 的 model 导出）：
-//   - 只导推理子集：enc_p / flow / dec / emb_g（滤掉 enc_q 与判别器）
-//   - 折叠 weight_norm：w = g·v/‖v‖（标准 dim0 约定）
-//   - Conv1d 展平为 conv_flat v2：[O,I,K] → (O, I*K)；dec.ups.*（ConvT1d）不展平
-//   - 写全 rvc.* 元数据（含 upsample_rates/kernel_sizes 必写、conv_flat=true）
+// Contract (mirrors the model export in RVC-GGML/scripts/export_gguf.py):
+//   - Export only the inference subset: enc_p / flow / dec / emb_g (filters out enc_q and the discriminators)
+//   - Fold weight_norm: w = g·v/‖v‖ (standard dim0 convention)
+//   - Flatten Conv1d to conv_flat v2: [O,I,K] -> (O, I*K); dec.ups.* (ConvT1d) is not flattened
+//   - Write the full rvc.* metadata (upsample_rates/kernel_sizes are required, conv_flat=true)
 //
-// 实现走 train.cpp 自带 GGUF 读写（traincpp::GgufFile / GgufWriter），
-// 不依赖 ggml；编入 rvc-train（纯主机，无需设备）。
+// Implementation uses train.cpp's built-in GGUF read/write (traincpp::GgufFile / GgufWriter),
+// without depending on ggml; compiled into rvc-train (host-only, no device required).
 #pragma once
 
 #include <string>
@@ -18,19 +18,19 @@ namespace rvc_train {
 namespace exporter {
 
 struct ModelExportOptions {
-    std::string in_path;       // 训练态 G GGUF（general.architecture = "rvc-train"）
-    std::string out_path;      // 输出推理 GGUF（general.architecture = "rvc"）
-    std::string general_name;  // 可选 general.name；空则用输出文件主名
-    // 当输入训练态 GGUF 因尾部 1 维折叠丢失真实维数（如 O=1 的 Conv1d 权重）时，
-    // 用来源文件的真实 ndims==3 名单强制按 Conv1d 展平（M7-4 实时快照桥接用；
-    // 列表为空时行为与 M6 完全一致）。
+    std::string in_path;       // training-state G GGUF (general.architecture = "rvc-train")
+    std::string out_path;      // output inference GGUF (general.architecture = "rvc")
+    std::string general_name;  // optional general.name; empty uses the output file stem
+    // When the input training-state GGUF loses the true rank because a trailing 1-dim is folded (e.g. Conv1d weights with O=1),
+    // use the source file's true ndims==3 list to force Conv1d flattening (used by the M7-4 live-snapshot bridge;
+    // when the list is empty, behavior is identical to M6).
     std::vector<std::string> force_flatten;
 };
 
-// 导出推理 GGUF。成功返回 true；失败返回 false 并写入 err。
+// Export an inference GGUF. Returns true on success; returns false on failure and writes err.
 bool export_inference_gguf(const ModelExportOptions& opt, std::string* err);
 
-// 扫描 GGUF 头，返回每个张量的**存储 n_dims**（低层，只读；供桥接修复折叠维）。
+// Scan the GGUF header and return each tensor's **stored n_dims** (low-level, read-only; lets the bridge repair folded dims).
 bool gguf_read_tensor_ndims(const std::string& path, std::unordered_map<std::string, int>* out,
                             std::string* err);
 

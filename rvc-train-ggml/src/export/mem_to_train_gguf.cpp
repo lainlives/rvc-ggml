@@ -1,4 +1,4 @@
-// RVC-Train-GGML - M7-2 内存 → 训练态 GGUF 桥接实现（src/export/mem_to_train_gguf.cpp）
+// RVC-Train-GGML - M7-2 in-memory -> training-state GGUF bridge implementation (src/export/mem_to_train_gguf.cpp)
 #include "export/mem_to_train_gguf.h"
 
 #include <cstdio>
@@ -32,7 +32,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
                       std::string* err) {
     if (specs.size() != data.size()) {
         if (err != nullptr) {
-            *err = "specs/data 长度不一致";
+            *err = "specs/data length mismatch";
         }
         return false;
     }
@@ -42,7 +42,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
         std::filesystem::create_directories(p.parent_path(), ec);
         if (ec) {
             if (err != nullptr) {
-                *err = "创建输出目录失败: " + p.parent_path().string();
+                *err = "failed to create output directory: " + p.parent_path().string();
             }
             return false;
         }
@@ -50,11 +50,11 @@ bool write_train_gguf(const model::ModelConfig& mc,
 
     ContextParams cp;
     cp.mem_size = (size_t) 64 << 20;
-    cp.no_alloc = false;  // 主机分配张量数据（供 GGUF 写出）
+    cp.no_alloc = false;  // host allocates tensor data (for GGUF writing)
     Context* ctx = context_new(cp);
     if (ctx == nullptr) {
         if (err != nullptr) {
-            *err = "context_new 失败";
+            *err = "context_new failed";
         }
         return false;
     }
@@ -62,7 +62,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
     if (w == nullptr) {
         context_free(ctx);
         if (err != nullptr) {
-            *err = "gguf_writer_new 失败";
+            *err = "gguf_writer_new failed";
         }
         return false;
     }
@@ -109,7 +109,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
         Tensor* t = new_tensor_nd(ctx, TYPE_F32, 4, s.ne.data());
         if (t == nullptr) {
             if (err != nullptr) {
-                *err = "创建张量失败: " + s.name;
+                *err = "failed to create tensor: " + s.name;
             }
             gguf_writer_free(w);
             context_free(ctx);
@@ -119,7 +119,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
         float* dst = tensor_data_f32(t);
         if (dst == nullptr) {
             if (err != nullptr) {
-                *err = "张量数据未分配: " + s.name;
+                *err = "tensor data not allocated: " + s.name;
             }
             gguf_writer_free(w);
             context_free(ctx);
@@ -128,7 +128,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
         const std::vector<float>& src = data[i];
         if ((int64_t) src.size() != tensor_nelements(t)) {
             if (err != nullptr) {
-                *err = "张量元素数不符: " + s.name;
+                *err = "tensor element count mismatch: " + s.name;
             }
             gguf_writer_free(w);
             context_free(ctx);
@@ -140,7 +140,7 @@ bool write_train_gguf(const model::ModelConfig& mc,
 
     const bool ok = gguf_writer_write(w, path.c_str());
     if (!ok && err != nullptr) {
-        *err = "写出 GGUF 失败: " + path;
+        *err = "failed to write GGUF: " + path;
     }
     gguf_writer_free(w);
     context_free(ctx);

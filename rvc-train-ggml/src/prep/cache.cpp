@@ -1,4 +1,4 @@
-// cache.cpp —— M4-4 训练缓存索引写入与自校验（格式见 cache.h 头注释）
+// cache.cpp -- M4-4 training cache index writing and self-check (format in the cache.h header comment)
 
 #include "prep/cache.h"
 
@@ -48,7 +48,7 @@ bool ensure_dir(const std::string& dir, std::string* err) {
     fs::create_directories(dir, ec);
     if (ec) {
         if (err) {
-            *err = "创建目录失败: " + dir + " (" + ec.message() + ")";
+            *err = "failed to create directory: " + dir + " (" + ec.message() + ")";
         }
         return false;
     }
@@ -59,7 +59,7 @@ bool write_text(const std::string& path, const std::string& text, std::string* e
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
         if (err) {
-            *err = "无法写入: " + path;
+            *err = "cannot write: " + path;
         }
         return false;
     }
@@ -176,7 +176,7 @@ bool write_cache_index(const std::string& cache_dir, const CacheMeta& meta,
         return false;
     }
 
-    // ---------- spec.json（字段字典；供 M5 训练与 verify 工具读取） ----------
+    // ---------- spec.json (field dictionary; read by M5 training and verify tools) ----------
     std::ostringstream sp;
     sp << "{\n";
     sp << "  \"format\": \"rvc-train-cache-spec\",\n";
@@ -186,21 +186,21 @@ bool write_cache_index(const std::string& cache_dir, const CacheMeta& meta,
     sp << "  \"file_kinds\": {\n";
     sp << "    \"gt\": {\"dtype\": \"f32\", \"shape\": \"[gt_samples]\"},\n";
     sp << "    \"16k\": {\"dtype\": \"f32\", \"shape\": \"[frames16k]\"},\n";
-    sp << "    \"f0hz\": {\"dtype\": \"f32\", \"shape\": \"[f0_frames]\", \"note\": \"UV 插值"
-          "后连续 f0 Hz\"},\n";
+    sp << "    \"f0hz\": {\"dtype\": \"f32\", \"shape\": \"[f0_frames]\", \"note\": \"continuous f0 Hz "
+          "after UV interpolation\"},\n";
     sp << "    \"f0bin\": {\"dtype\": \"i32\", \"shape\": \"[f0_frames]\", \"note\": \"1..255\"},\n";
     sp << "    \"feat\": {\"dtype\": \"f32\", \"shape\": \"[feat_frames,feat_dim]\", "
-          "\"layout\": \"row-major（= torch [T,C]）\"},\n";
+          "\"layout\": \"row-major (= torch [T,C])\"},\n";
     sp << "    \"spec\": {\"dtype\": \"f32\", \"shape\": \"[spec_bins,spec_frames]\", "
-          "\"layout\": \"row-major（= torch [F,T]）\"}\n";
+          "\"layout\": \"row-major (= torch [F,T])\"}\n";
     sp << "  },\n";
     sp << "  \"frame_formulas\": {\n";
     sp << "    \"frames16k\": \"audio16k.size()\",\n";
-    sp << "    \"f0_frames\": \"frames16k//160+1（RMVPE torch.stft(center=True)）\",\n";
-    sp << "    \"feat_frames\": \"(frames16k-400)//320+1（HuBERT conv 前端无 padding）\",\n";
-    sp << "    \"spec_frames\": \"gt_samples//hop（reflect pad (n_fft-hop)/2 + center=False）\"\n";
+    sp << "    \"f0_frames\": \"frames16k//160+1 (RMVPE torch.stft(center=True))\",\n";
+    sp << "    \"feat_frames\": \"(frames16k-400)//320+1 (HuBERT conv frontend, no padding)\",\n";
+    sp << "    \"spec_frames\": \"gt_samples//hop (reflect pad (n_fft-hop)/2 + center=False)\"\n";
     sp << "  },\n";
-    sp << "  \"notes\": \"id=<case>_<官方 idx1>；不兼容 Python .npy/.spec.pt（对拍工具另写读取器）\"\n";
+    sp << "  \"notes\": \"id=<case>_<official idx1>; not compatible with Python .npy/.spec.pt (comparison tools provide their own reader)\"\n";
     sp << "}\n";
     if (!write_text((fs::path(cache_dir) / "spec.json").string(), sp.str(), err)) {
         return false;
@@ -219,7 +219,7 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
     }
     if (!root.is_object()) {
         if (err) {
-            *err = "dataset.json 顶层不是对象: " + dataset_path.string();
+            *err = "dataset.json top level is not an object: " + dataset_path.string();
         }
         return false;
     }
@@ -228,14 +228,14 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
     if (format == nullptr || !format->is_string() || format->as_string() != "rvc-train-cache" ||
         version == nullptr || version->as_int() != kCacheFormatVersion) {
         if (err) {
-            *err = "dataset.json format/format_version 不符（期望 rvc-train-cache v" +
-                   std::to_string(kCacheFormatVersion) + "）";
+            *err = "dataset.json format/format_version mismatch (expected rvc-train-cache v" +
+                   std::to_string(kCacheFormatVersion) + ")";
         }
         return false;
     }
     if (!fs::is_regular_file(spec_path)) {
         if (err) {
-            *err = "缺少 spec.json: " + spec_path.string();
+            *err = "missing spec.json: " + spec_path.string();
         }
         return false;
     }
@@ -255,7 +255,7 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
     const common::JsonValue* samples = root.find("samples");
     if (samples == nullptr || !samples->is_array()) {
         if (err) {
-            *err = "dataset.json 缺少 samples 数组";
+            *err = "dataset.json is missing the samples array";
         }
         return false;
     }
@@ -271,20 +271,20 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
         const common::JsonValue& s = samples->at(i);
         if (!s.is_object()) {
             if (err) {
-                *err = "samples[" + std::to_string(i) + "] 不是对象";
+                *err = "samples[" + std::to_string(i) + "] is not an object";
             }
             return false;
         }
         const std::string id = s.find("id") ? s.find("id")->as_string() : std::string();
         if (id.empty()) {
             if (err) {
-                *err = "samples[" + std::to_string(i) + "] 缺少 id";
+                *err = "samples[" + std::to_string(i) + "] is missing id";
             }
             return false;
         }
         if (!ids.insert(id).second) {
             if (err) {
-                *err = "样本 id 重复: " + id;
+                *err = "duplicate sample id: " + id;
             }
             return false;
         }
@@ -301,21 +301,21 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
         const common::JsonValue* files = s.find("files");
         if (files == nullptr || !files->is_object()) {
             if (err) {
-                *err = "样本 " + id + " 缺少 files 对象";
+                *err = "sample " + id + " is missing the files object";
             }
             return false;
         }
 
         auto fail = [&](const std::string& msg) {
             if (err) {
-                *err = "样本 " + id + ": " + msg;
+                *err = "sample " + id + ": " + msg;
             }
             return false;
         };
 
-        // 帧数公式一致性
+        // frame-count formula consistency
         if (info.frames16k <= 0 || info.gt_samples <= 0) {
-            return fail("gt_samples/frames16k 非正");
+            return fail("gt_samples/frames16k non-positive");
         }
         const int64_t expect_f0 = info.frames16k / 160 + 1;
         const int64_t expect_feat = (info.frames16k - 400) / 320 + 1;
@@ -332,7 +332,7 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
         }
         if (info.spec_frames > 0 && info.spec_frames != spec_frames_expect) {
             return fail("spec_frames=" + std::to_string(info.spec_frames) +
-                        " != 公式值 " + std::to_string(spec_frames_expect));
+                        " != formula value " + std::to_string(spec_frames_expect));
         }
 
         for (std::size_t k = 0; k < files->size(); ++k) {
@@ -340,28 +340,28 @@ bool validate_cache(const std::string& cache_dir, std::string* summary, std::str
             const std::string rel = files->value_at(k).as_string();
             const fs::path p = dir / rel;
             if (!fs::is_regular_file(p)) {
-                return fail("缺少文件 " + rel);
+                return fail("missing file " + rel);
             }
             if (kind == "f0hz" || kind == "f0bin") {
                 if (info.f0_frames != expect_f0) {
                     return fail("f0_frames=" + std::to_string(info.f0_frames) +
-                                " != 公式值 " + std::to_string(expect_f0));
+                                " != formula value " + std::to_string(expect_f0));
                 }
             } else if (kind == "feat") {
                 if (info.feat_frames != expect_feat) {
                     return fail("feat_frames=" + std::to_string(info.feat_frames) +
-                                " != 公式值 " + std::to_string(expect_feat));
+                                " != formula value " + std::to_string(expect_feat));
                 }
             }
             const int64_t want = expected_bytes(kind, info);
             if (want < 0) {
-                return fail("未知文件类型 " + kind);
+                return fail("unknown file kind " + kind);
             }
             std::error_code ec;
             const auto got = static_cast<int64_t>(fs::file_size(p, ec));
             if (ec || got != want) {
-                return fail("文件 " + rel + " 大小 " + std::to_string(got) + " != " +
-                            std::to_string(want) + " 字节");
+                return fail("file " + rel + " size " + std::to_string(got) + " != " +
+                            std::to_string(want) + " bytes");
             }
             total_bytes += got;
         }

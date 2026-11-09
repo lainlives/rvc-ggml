@@ -1,11 +1,11 @@
-// RVC-Train-GGML - M7-3 梯度累积等价自检实现（src/train/grad_accum_selftest.cpp）
+// RVC-Train-GGML - M7-3 gradient accumulation equivalence self-test implementation (src/train/grad_accum_selftest.cpp)
 //
-// 门 G-7.3（梯度级等价）：
-//   用同权重、同数据构造 A 臂（batch=B, grad_accum=K）与 B 臂（batch=B*K, grad_accum=1）：
-//     A：TrainStep::run_step_accum(K 个 micro-batch) → 累积梯度（图内损失已按 1/K 缩放）
-//     B：TrainStep::set_batch(合并批) + run_step → 全批量均值梯度
-//   比较 G/D 全部参数 grad_acc：max_abs / 归一化相对误差 / rms；门 max_rel ≤ 1e-3。
-//   同时打印两臂 6 项 loss 供观察（loss 应为有效 batch 均值）。
+// Gate G-7.3 (gradient-level equivalence):
+//   With the same weights and data, build arm A (batch=B, grad_accum=K) and arm B (batch=B*K, grad_accum=1):
+//     A: TrainStep::run_step_accum(K micro-batches) -> accumulated gradient (in-graph losses already scaled by 1/K)
+//     B: TrainStep::set_batch(combined batch) + run_step -> full-batch mean gradient
+//   Compare grad_acc of all G/D parameters: max_abs / normalized relative error / rms; gate max_rel ≤ 1e-3.
+//   Also print the 6 losses of both arms for inspection (losses should be the effective batch mean).
 #include "train/grad_accum_selftest.h"
 
 #include "data/dataset.h"
@@ -27,7 +27,7 @@ namespace train {
 
 namespace {
 
-// 环境变量开关（MSVC getenv 触发 C4996，局部屏蔽）
+// Environment variable switch (MSVC getenv triggers C4996, locally suppressed)
 bool env_flag(const char* name) {
 #pragma warning(push)
 #pragma warning(disable : 4996)
@@ -42,7 +42,7 @@ bool finite6(const TrainStepLosses& L) {
            std::isfinite(L.loss_mel) && std::isfinite(L.loss_kl);
 }
 
-// 与 Trainer::build_batch_into 一致：把每样本波形从 L 截断到 d
+// Same as Trainer::build_batch_into: truncate each sample waveform from L to d
 void truncate_wave(data::BatchBuffers* b, int64_t d, int64_t L) {
     if (d <= 0 || d >= L || b->batch <= 0) {
         return;
@@ -56,7 +56,7 @@ void truncate_wave(data::BatchBuffers* b, int64_t d, int64_t L) {
     b->wave.swap(w);
 }
 
-// 追加 src（B_s 个样本，B_s 为最慢维）到 dst（B_d 个样本），得到 B_d+B_s
+// Append src (B_s samples, B_s is the slowest dimension) to dst (B_d samples), yielding B_d+B_s
 void append_batch(data::BatchBuffers* dst, const data::BatchBuffers& src) {
     auto ap = [](std::vector<float>& d, const std::vector<float>& s) {
         d.insert(d.end(), s.begin(), s.end());
@@ -80,7 +80,7 @@ void append_batch(data::BatchBuffers* dst, const data::BatchBuffers& src) {
     dst->batch += src.batch;
 }
 
-// 收集参数梯度（grad_acc 优先，退回 grad）到扁平向量
+// Collect parameter gradients (grad_acc preferred, fallback to grad) into a flat vector
 void collect_list(const traincpp::ParamList& pl, std::vector<float>* out) {
     const int64_t n = traincpp::param_list_count(&pl);
     for (int64_t i = 0; i < n; ++i) {
@@ -96,11 +96,11 @@ void collect_list(const traincpp::ParamList& pl, std::vector<float>* out) {
     }
 }
 
-// 对比两梯度向量，打印并返回归一化相对误差
+// Compare two gradient vectors, print and return the normalized relative error
 double grad_stats(const char* tag, const std::vector<float>& a, const std::vector<float>& b,
                   int* failed) {
     if (a.size() != b.size()) {
-        std::printf("[grad-accum] [FAIL] %s 元素数不一致（%zu != %zu）\n", tag, a.size(), b.size());
+        std::printf("[grad-accum] [FAIL] %s element count mismatch (%zu != %zu)\n", tag, a.size(), b.size());
         ++(*failed);
         return 0.0;
     }
@@ -113,7 +113,7 @@ double grad_stats(const char* tag, const std::vector<float>& a, const std::vecto
     }
     const double rms = a.empty() ? 0.0 : std::sqrt(sum_sq / (double) a.size());
     const double rel = max_abs / std::max(max_ref, 1e-12);
-    std::printf("[grad-accum] %s：max_abs=%.3e max_ref=%.3e norm_rel=%.3e rms=%.3e\n", tag,
+    std::printf("[grad-accum] %s: max_abs=%.3e max_ref=%.3e norm_rel=%.3e rms=%.3e\n", tag,
                 max_abs, max_ref, rel, rms);
     return rel;
 }
@@ -124,25 +124,25 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
                             const std::string& exp_dir, traincpp::Device* dev, int64_t bucket,
                             int64_t batch, int64_t grad_accum, int64_t disc_len) {
     if (dev == nullptr) {
-        std::printf("[grad-accum] 无可用设备\n");
+        std::printf("[grad-accum] no usable device\n");
         return 2;
     }
     const int64_t K = grad_accum > 0 ? grad_accum : 1;
     const int64_t B = batch > 0 ? batch : 1;
     if (K < 2) {
-        std::printf("[grad-accum] --grad-accum 必须 >= 2（当前 %lld）\n", (long long) K);
+        std::printf("[grad-accum] --grad-accum must be >= 2 (current %lld)\n", (long long) K);
         return 2;
     }
     if (weights_g.empty() || weights_d.empty() || exp_dir.empty()) {
-        std::printf("[grad-accum] 需要 --weights <G> --d-weights <D> --exp <缓存>\n");
+        std::printf("[grad-accum] need --weights <G> --d-weights <D> --exp <cache>\n");
         return 2;
     }
 
-    // 从 G 元数据推导缓存形状
+    // Derive cache shapes from the G metadata
     std::string err;
     std::unique_ptr<model::TrainWeights> wg(model::TrainWeights::open(weights_g, &err));
     if (wg == nullptr) {
-        std::printf("[grad-accum] 打开 G 权重失败: %s\n", err.c_str());
+        std::printf("[grad-accum] failed to open G weights: %s\n", err.c_str());
         return 2;
     }
     model::TrainMeta mg;
@@ -174,7 +174,7 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
 
     data::Dataset ds;
     if (!data::Dataset::open(exp_dir, dc, &ds, &err)) {
-        std::printf("[grad-accum] 打开缓存失败: %s\n", err.c_str());
+        std::printf("[grad-accum] failed to open cache: %s\n", err.c_str());
         return 2;
     }
     std::vector<int64_t> eligible;
@@ -186,13 +186,13 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
     }
     const int64_t need = K * B;
     if ((int64_t) eligible.size() < need) {
-        std::printf("[grad-accum] 可用样本 %lld < 需要 %lld（K*B）\n", (long long) eligible.size(),
+        std::printf("[grad-accum] eligible samples %lld < needed %lld (K*B)\n", (long long) eligible.size(),
                     (long long) need);
         return 2;
     }
-    // 选取 aligned_frames 相同的 K*B 个样本：等长 → 所有归约（含官方 KL 的全局 sum/sum）
-    // 逐样本可加，grad_accum=K 与 batch=K 应精确等价。跨长度时官方 KL 的全局归一化不可分，
-    // 属已知语义差异（见 docs/开发进度.md M7-3 日志）。
+    // Pick K*B samples with identical aligned_frames: equal length -> all reductions (including the official KL's global sum/sum)
+    // are per-sample additive, so grad_accum=K and batch=K should be exactly equivalent. Across lengths the official KL's global
+    // normalization is not separable, a known semantic difference (see docs/dev_progress.md M7-3 log).
     std::vector<int64_t> idx;
     {
         std::map<int64_t, std::vector<int64_t>> by_frames;
@@ -202,13 +202,13 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
         for (const auto& kv : by_frames) {
             if ((int64_t) kv.second.size() >= need) {
                 idx.assign(kv.second.begin(), kv.second.begin() + (size_t) need);
-                std::printf("[grad-accum] 选定等长样本：aligned_frames=%lld × %lld\n",
+                std::printf("[grad-accum] selected equal-length samples: aligned_frames=%lld × %lld\n",
                             (long long) kv.first, (long long) need);
                 break;
             }
         }
         if (idx.empty()) {
-            std::printf("[grad-accum] 缓存中无 %lld 个等长样本，退回重复样本（仅验证机制）\n",
+            std::printf("[grad-accum] no %lld equal-length samples in the cache, falling back to repeated samples (mechanism check only)\n",
                         (long long) need);
             for (int64_t i = 0; i < need; ++i) {
                 idx.push_back(eligible[(size_t) (i % eligible.size())]);
@@ -216,12 +216,12 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
         }
     }
 
-    std::printf("[grad-accum] 设备=%s bucket=%lld batch=%lld K=%lld disc_len=%lld "
-                "可用样本=%lld\n",
+    std::printf("[grad-accum] device=%s bucket=%lld batch=%lld K=%lld disc_len=%lld "
+                "eligible samples=%lld\n",
                 dev->props().name.c_str(), (long long) Tb, (long long) B, (long long) K,
                 (long long) D, (long long) idx.size());
 
-    // 用固定 seed 装配 K 个 micro-batch（B 样本/个），再 append 成 B*K 合并批
+    // Assemble K micro-batches (B samples each) with a fixed seed, then append them into a combined B*K batch
     traincpp::Rng rng;
     traincpp::rng_seed(&rng, 20260928u);
     std::vector<data::BatchBuffers> micro((size_t) K);
@@ -229,7 +229,7 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
         std::vector<int64_t> mi(idx.begin() + (size_t) (m * B),
                                 idx.begin() + (size_t) (m * B + B));
         if (!ds.build_batch(mi, Tb, &rng, nullptr, &micro[(size_t) m], &err)) {
-            std::printf("[grad-accum] 装配 micro %lld 失败: %s\n", (long long) m, err.c_str());
+            std::printf("[grad-accum] failed to assemble micro %lld: %s\n", (long long) m, err.c_str());
             return 1;
         }
         truncate_wave(&micro[(size_t) m], D, seg_samples);
@@ -238,7 +238,7 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
         for (int64_t m = 1; m < K; ++m) {
             micro[(size_t) m] = micro[0];
         }
-        std::printf("[grad-accum] RVCT_ACC_DUP：全部 micro 使用同一数据（诊断 D 的 batch 正确性）\n");
+        std::printf("[grad-accum] RVCT_ACC_DUP: all micro-batches use the same data (diagnosing D batch correctness)\n");
     }
     data::BatchBuffers combined = micro[0];
     for (int64_t m = 1; m < K; ++m) {
@@ -260,78 +260,78 @@ int run_grad_accum_selftest(const std::string& weights_g, const std::string& wei
 
     int failed = 0;
 
-    // ---------------- A 臂：累积 K 个 micro-batch ----------------
+    // ---------------- arm A: accumulate K micro-batches ----------------
     std::vector<float> ga_g, ga_d;
     TrainStepLosses La{};
     {
         std::unique_ptr<TrainStep> a(TrainStep::create(weights_g, weights_d, ca, dev, &err));
         if (a == nullptr) {
-            std::printf("[grad-accum] A 创建失败: %s\n", err.c_str());
+            std::printf("[grad-accum] A create failed: %s\n", err.c_str());
             return 1;
         }
         if (!a->run_step_accum(micro.data(), K, &La, &err)) {
-            std::printf("[grad-accum] A run_step_accum 失败: %s\n", err.c_str());
+            std::printf("[grad-accum] A run_step_accum failed: %s\n", err.c_str());
             return 1;
         }
         collect_list(a->g_params().params(), &ga_g);
         collect_list(a->d_params().params(), &ga_d);
     }
     std::printf("[grad-accum] A(batch=%lld,K=%lld) loss_disc=%.6f loss_gen_all=%.6f "
-                "loss_gen=%.6f loss_fm=%.6f loss_mel=%.6f loss_kl=%.6f（G %zu / D %zu 元素）\n",
+                "loss_gen=%.6f loss_fm=%.6f loss_mel=%.6f loss_kl=%.6f (G %zu / D %zu elements)\n",
                 (long long) B, (long long) K, (double) La.loss_disc, (double) La.loss_gen_all,
                 (double) La.loss_gen, (double) La.loss_fm, (double) La.loss_mel,
                 (double) La.loss_kl, ga_g.size(), ga_d.size());
 
-    // ---------------- B 臂：全批量 B*K ----------------
+    // ---------------- arm B: full batch B*K ----------------
     std::vector<float> gb_g, gb_d;
     TrainStepLosses Lb{};
     {
         std::unique_ptr<TrainStep> b(TrainStep::create(weights_g, weights_d, cb, dev, &err));
         if (b == nullptr) {
-            std::printf("[grad-accum] B 创建失败: %s\n", err.c_str());
+            std::printf("[grad-accum] B create failed: %s\n", err.c_str());
             return 1;
         }
         if (!b->set_batch(combined, &err)) {
-            std::printf("[grad-accum] B set_batch 失败: %s\n", err.c_str());
+            std::printf("[grad-accum] B set_batch failed: %s\n", err.c_str());
             return 1;
         }
         if (!b->run_step(&Lb, &err)) {
-            std::printf("[grad-accum] B run_step 失败: %s\n", err.c_str());
+            std::printf("[grad-accum] B run_step failed: %s\n", err.c_str());
             return 1;
         }
         collect_list(b->g_params().params(), &gb_g);
         collect_list(b->d_params().params(), &gb_d);
     }
     std::printf("[grad-accum] B(batch=%lld,K=1) loss_disc=%.6f loss_gen_all=%.6f "
-                "loss_gen=%.6f loss_fm=%.6f loss_mel=%.6f loss_kl=%.6f（G %zu / D %zu 元素）\n",
+                "loss_gen=%.6f loss_fm=%.6f loss_mel=%.6f loss_kl=%.6f (G %zu / D %zu elements)\n",
                 (long long) (K * B), (double) Lb.loss_disc, (double) Lb.loss_gen_all,
                 (double) Lb.loss_gen, (double) Lb.loss_fm, (double) Lb.loss_mel,
                 (double) Lb.loss_kl, gb_g.size(), gb_d.size());
 
-    // ---------------- 对比 ----------------
-    const double rel_g = grad_stats("G 梯度", ga_g, gb_g, &failed);
-    const double rel_d = grad_stats("D 梯度", ga_d, gb_d, &failed);
+    // ---------------- comparison ----------------
+    const double rel_g = grad_stats("G gradients", ga_g, gb_g, &failed);
+    const double rel_d = grad_stats("D gradients", ga_d, gb_d, &failed);
 
     const bool loss_finite = finite6(La) && finite6(Lb);
     if (!loss_finite) {
-        std::printf("[grad-accum] [FAIL] loss 非有限\n");
+        std::printf("[grad-accum] [FAIL] loss not finite\n");
         ++failed;
     }
     const double kGate = 1e-3;
     const double rel = std::max(rel_g, rel_d);
     if (!(rel <= kGate)) {
-        std::printf("[grad-accum] [FAIL] 梯度归一化相对误差 max(%.3e, %.3e) > 门 %.0e\n", rel_g,
+        std::printf("[grad-accum] [FAIL] gradient normalized relative error max(%.3e, %.3e) > gate %.0e\n", rel_g,
                     rel_d, kGate);
         ++failed;
     } else {
-        std::printf("[grad-accum] 梯度等价 OK（max norm_rel=%.3e <= 门 %.0e）\n", rel, kGate);
+        std::printf("[grad-accum] gradients equivalent OK (max norm_rel=%.3e <= gate %.0e)\n", rel, kGate);
     }
 
     const double lrel = std::fabs((double) La.loss_gen_all - (double) Lb.loss_gen_all) /
                         std::max(std::fabs((double) Lb.loss_gen_all), 1e-12);
-    std::printf("[grad-accum] loss_gen_all 相对差=%.3e（信息性）\n", lrel);
+    std::printf("[grad-accum] loss_gen_all relative difference=%.3e (informational)\n", lrel);
 
-    std::printf("[grad-accum] %s\n", failed == 0 ? "通过（门 G-7.3）" : "失败");
+    std::printf("[grad-accum] %s\n", failed == 0 ? "passed (gate G-7.3)" : "failed");
     return failed == 0 ? 0 : 1;
 }
 

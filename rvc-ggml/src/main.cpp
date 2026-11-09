@@ -1,6 +1,6 @@
 ﻿// main.cpp — RVC-GGML
-// 基于 ggml (Vulkan/CUDA/CPU) 的 RVC 语音转换推理
-// P0 阶段：CLI 骨架 + 音频管道自检
+// ggml (Vulkan/CUDA/CPU) based RVC voice conversion inference
+// P0 stage: CLI skeleton + audio pipeline self-test
 
 #include <windows.h>
 
@@ -38,14 +38,14 @@ namespace {
         int split_query, int split_center, int split_max) {
         utils::ensure_directory(out_dir);
 
-        Logger::info("加载音频: " + input_wav);
+        Logger::info("Loading audio: " + input_wav);
         AudioData audio = load_wav(input_wav);
-        cout << "  采样率: " << audio.sample_rate
-            << "  声道: " << audio.num_channels
-            << "  样本: " << audio.total_samples << endl;
+        cout << "  Sample rate: " << audio.sample_rate
+            << "  Channels: " << audio.num_channels
+            << "  Samples: " << audio.total_samples << endl;
 
         vector<float> mono = to_mono_16k(audio, 16000);
-        cout << "  单声道16k样本: " << mono.size() << endl;
+        cout << "  Mono 16k samples: " << mono.size() << endl;
         {
             ofstream f(out_dir + "/a_mono16k.raw", ios::binary);
             f.write(reinterpret_cast<const char*>(mono.data()),
@@ -62,11 +62,11 @@ namespace {
         }
         save_wav(out_dir + "/b_hp48.wav", filtered.data(), 1, 16000, filtered.size());
 
-        // 静音切块点（Python Pipeline 在滤波后的 16k 音频上计算）
+        // Silent split points (Python Pipeline computes these on the filtered 16k audio)
         const auto splits = rvc::dsp::quiet_split_points(filtered, split_query, split_center, split_max);
-        cout << "  静音切块点: " << splits.size() << " 个";
+        cout << "  Silent split points: " << splits.size() << " total";
         if (!splits.empty()) {
-            cout << " (首个=" << splits.front() << ")";
+            cout << " (first=" << splits.front() << ")";
         }
         cout << endl;
         {
@@ -80,49 +80,49 @@ namespace {
                 static_cast<streamsize>(asum.size() * sizeof(float)));
         }
 
-        // RMS 曲线（16k）
+        // RMS curve (16k)
         const auto rms = rvc::dsp::frame_rms(filtered, 16000);
         {
             ofstream f(out_dir + "/d_rms16k.raw", ios::binary);
             f.write(reinterpret_cast<const char*>(rms.data()),
                 static_cast<streamsize>(rms.size() * sizeof(float)));
         }
-        cout << "  RMS 帧数: " << rms.size() << endl;
+        cout << "  RMS frames: " << rms.size() << endl;
 
-        Logger::info("自检输出写入: " + out_dir);
+        Logger::info("Self-test output written to: " + out_dir);
         return 0;
     }
 
     void print_usage() {
-        cout << "用法: RVC-GGML.exe [选项]" << endl;
-        cout << "  --input <wav>        输入音频文件（给出即进入转换模式）" << endl;
-        cout << "  --output <wav>       输出文件（默认 output/converted.wav）" << endl;
-        cout << "  --model <gguf>       角色模型（默认 models/guanguanV1.gguf）" << endl;
-        cout << "  --pitch <n>          变调半音数（默认 0）" << endl;
-        cout << "  --sid <n>            说话人 ID（默认 0）" << endl;
-        cout << "  --index <gguf>       检索索引（默认不用）" << endl;
-        cout << "  --index-rate <r>     检索混合率 0~1（默认 0）" << endl;
-        cout << "  --protect <p>        清音保护 0~0.5（默认 0.33）" << endl;
-        cout << "  --rms-mix-rate <r>   RMS 混合率 0~1（默认 1=不混合）" << endl;
-        cout << "  --resample-sr <n>    输出重采样率（默认 0=模型采样率）" << endl;
-        cout << "  --noise-dir <dir>    确定性验证：e2e_call{i}_{rnd,sine_noise}.raw" << endl;
-        cout << "  --f0-inject          验证用：以 e2e_call{i}_pitchf.raw 覆盖每块 f0" << endl;
-        cout << "  --device <id>        推理设备（默认 99=CPU，0+=GPU）" << endl;
-        cout << "  --list-devices       列出可用 GPU 设备" << endl;
-        cout << "  --audio-selftest     音频管道自检（输出中间结果到 output/selftest）" << endl;
-        cout << "  --hubert-selftest    HuBERT 图自检（需要 output/ref 参考数据）" << endl;
-        cout << "  --rmvpe-selftest     RMVPE 图自检（需要 output/ref 参考数据）" << endl;
-        cout << "  --vits-selftest      VITS 合成器自检（需 --model 指定角色 GGUF）" << endl;
-        cout << "  --ref-dir <dir>      参考数据目录（默认 output/ref）" << endl;
-        cout << "  --model-dir <dir>    GGUF 模型目录（默认 models）" << endl;
-        cout << "  --quant <level>      量化档位: fp16/q8_0/q5_1/q4_1/q4_0" << endl;
-        cout << "                       （加载 hubert.<level>.gguf / rmvpe.<level>.gguf / <角色>.<level>.gguf）" << endl;
-        cout << "  --x-pad/--x-query/--x-center/--x-max  切块参数秒（默认 1/6/38/41）" << endl;
-        cout << "  --interactive, -i    强制进入交互式向导（无参数启动时默认进入）" << endl;
-        cout << "  --help, -h           显示帮助" << endl;
+        cout << "Usage: RVC-GGML.exe [options]" << endl;
+        cout << "  --input <wav>        input audio file (entering conversion mode when given)" << endl;
+        cout << "  --output <wav>       output file (default output/converted.wav)" << endl;
+        cout << "  --model <gguf>       character model (default models/guanguanV1.gguf)" << endl;
+        cout << "  --pitch <n>          pitch shift in semitones (default 0)" << endl;
+        cout << "  --sid <n>            speaker ID (default 0)" << endl;
+        cout << "  --index <gguf>       retrieval index (unused by default)" << endl;
+        cout << "  --index-rate <r>     retrieval mix rate 0~1 (default 0)" << endl;
+        cout << "  --protect <p>        unvoiced protection 0~0.5 (default 0.33)" << endl;
+        cout << "  --rms-mix-rate <r>   RMS mix rate 0~1 (default 1=no mixing)" << endl;
+        cout << "  --resample-sr <n>    output resample rate (default 0=model sample rate)" << endl;
+        cout << "  --noise-dir <dir>    deterministic validation: e2e_call{i}_{rnd,sine_noise}.raw" << endl;
+        cout << "  --f0-inject          for validation: override each chunk's f0 with e2e_call{i}_pitchf.raw" << endl;
+        cout << "  --device <id>        inference device (default 99=CPU, 0+=GPU)" << endl;
+        cout << "  --list-devices       list available GPU devices" << endl;
+        cout << "  --audio-selftest     audio pipeline self-test (writes intermediate results to output/selftest)" << endl;
+        cout << "  --hubert-selftest    HuBERT graph self-test (requires output/ref reference data)" << endl;
+        cout << "  --rmvpe-selftest     RMVPE graph self-test (requires output/ref reference data)" << endl;
+        cout << "  --vits-selftest      VITS synthesizer self-test (requires --model to specify a character GGUF)" << endl;
+        cout << "  --ref-dir <dir>      reference data directory (default output/ref)" << endl;
+        cout << "  --model-dir <dir>    GGUF model directory (default models)" << endl;
+        cout << "  --quant <level>      quant level: fp16/q8_0/q5_1/q4_1/q4_0" << endl;
+        cout << "                       (loads hubert.<level>.gguf / rmvpe.<level>.gguf / <character>.<level>.gguf)" << endl;
+        cout << "  --x-pad/--x-query/--x-center/--x-max  chunk parameters in seconds (default 1/6/38/41)" << endl;
+        cout << "  --interactive, -i    force the interactive wizard (entered by default when started without arguments)" << endl;
+        cout << "  --help, -h           show help" << endl;
     }
 
-    // 读取 raw float32 文件
+    // Read a raw float32 file
     bool load_raw_f32(const string& path, vector<float>& out) {
         std::ifstream in(path, ios::binary | ios::ate);
         if (!in) {
@@ -141,7 +141,7 @@ namespace {
             static_cast<streamsize>(data.size() * sizeof(float)));
     }
 
-    // 读取 raw 文件为字节流
+    // Read a raw file as a byte stream
     bool load_raw_bytes(const string& path, vector<uint8_t>& out) {
         std::ifstream in(path, ios::binary | ios::ate);
         if (!in) {
@@ -166,22 +166,22 @@ namespace {
 
 
     // ------------------------------------------------------------
-    // HuBERT 自检：加载参考输入 -> 建图 -> 运行 -> 输出中间张量
+    // HuBERT self-test: load reference input -> build graph -> run -> dump intermediate tensors
     // ------------------------------------------------------------
     int run_hubert_selftest(const string& model_dir, const string& ref_dir, int device_id) {
         const string model_path = model_dir + "/hubert.gguf";
         if (!utils::file_exists(model_path)) {
-            Logger::error("找不到模型: " + model_path);
+            Logger::error("Model not found: " + model_path);
             return 1;
         }
         const string ref_input = ref_dir + "/hubert_input.raw";
         if (!utils::file_exists(ref_input)) {
-            Logger::error("找不到参考输入: " + ref_input + "（自检需要参考张量，随发行版不分发）");
+            Logger::error("Reference input not found: " + ref_input + " (self-test requires reference tensors, not shipped with the distribution)");
             return 1;
         }
 
         rvc::GgmlDevice device(device_id);
-        Logger::info("计算后端: " + device.name());
+        Logger::info("Compute backend: " + device.name());
 
         GgufModel model;
         model.load(model_path, device.backend());
@@ -190,10 +190,10 @@ namespace {
             << " heads=" << cfg.heads << " conv_pos=" << cfg.conv_pos << endl;
 
 
-        // 读取参考输入
+        // Read reference input
         std::ifstream in(ref_input, ios::binary | ios::ate);
         if (!in) {
-            Logger::error("读取参考输入失败");
+            Logger::error("Failed to read reference input");
             return 1;
         }
         const size_t n_samples = static_cast<size_t>(in.tellg()) / sizeof(float);
@@ -205,7 +205,7 @@ namespace {
         const int64_t T = static_cast<int64_t>(n_samples);
         const int64_t T_pad = ((T + 159) / 160) * 160;
         audio.resize(static_cast<size_t>(T_pad), 0.0f);
-        cout << "  输入样本: " << T << " -> pad " << T_pad << endl;
+        cout << "  Input samples: " << T << " -> pad " << T_pad << endl;
 
         rvc::GgmlGraphRunner runner(device.backend(), 1024ull * 1024 * 1024, 32768);
         ggml_tensor* input = ggml_new_tensor_3d(runner.ctx(), GGML_TYPE_F32, T_pad, 1, 1);
@@ -224,7 +224,7 @@ namespace {
         runner.expand(out_l9);
         runner.expand(out_l12);
 
-        // 调试：展开中间张量（RVC_HUBERT_DUMP=1）
+        // Debug: expand intermediate tensors (RVC_HUBERT_DUMP=1)
         const bool dump_debug = getenv("RVC_HUBERT_DUMP") != nullptr;
         if (dump_debug) {
             for (const auto& d : rvc::hubert::debug_tensors()) {
@@ -233,22 +233,22 @@ namespace {
             }
         }
         if (!runner.allocate()) {
-            Logger::error("计算图缓冲分配失败");
+            Logger::error("Failed to allocate compute graph buffer");
             return 1;
         }
-        cout << "  图: 节点=" << runner.node_count()
-            << " 缓冲=" << runner.buffer_size() / (1024 * 1024) << " MiB" << endl;
+        cout << "  Graph: nodes=" << runner.node_count()
+            << " buffer=" << runner.buffer_size() / (1024 * 1024) << " MiB" << endl;
 
         Timer timer;
         runner.set_input_vec(input, audio);
         runner.compute();
-        cout << "  推理耗时: " << timer.elapsed_ms() << " ms" << endl;
+        cout << "  Inference time: " << timer.elapsed_ms() << " ms" << endl;
 
         const int64_t frames = out_l9->ne[1];
-        cout << "  输出帧数: " << frames << endl;
+        cout << "  Output frames: " << frames << endl;
 
-        // 张量为 [C, T]（C 在 ne0）：内存与 PyTorch 行主序 [T, C] 一致，
-        // 按 numpy reshape(T, C) 读取即为参考布局。
+        // Tensor is [C, T] (C in ne0): memory matches PyTorch row-major [T, C],
+        // so reading it as numpy reshape(T, C) gives the reference layout.
         auto dump = [&](ggml_tensor* t, const string& name) {
             const size_t total = static_cast<size_t>(ggml_nelements(t));
             vector<float> data(total);
@@ -256,7 +256,7 @@ namespace {
             ofstream f(ref_dir + "/" + name, ios::binary);
             f.write(reinterpret_cast<const char*>(data.data()),
                 static_cast<streamsize>(data.size() * sizeof(float)));
-            cout << "  写出 " << name << ": [" << t->ne[1] << ", " << t->ne[0] << "]" << endl;
+            cout << "  Wrote " << name << ": [" << t->ne[1] << ", " << t->ne[0] << "]" << endl;
         };
         dump(out_l9, "cpp_hubert_v1_layer9.raw");
         dump(out_l12, "cpp_hubert_v2_layer12.raw");
@@ -271,33 +271,33 @@ namespace {
     }
 
     // ------------------------------------------------------------
-    // RMVPE 自检：参考输入（input_16k.raw）-> mel/显著性/f0 -> 落盘
+    // RMVPE self-test: reference input (input_16k.raw) -> mel/salience/f0 -> dump to disk
     // ------------------------------------------------------------
     int run_rmvpe_selftest(const string& model_dir, const string& ref_dir, int device_id,
         const string& input_wav) {
         const string model_path = model_dir + "/rmvpe.gguf";
         if (!utils::file_exists(model_path)) {
-            Logger::error("找不到模型: " + model_path);
+            Logger::error("Model not found: " + model_path);
             return 1;
         }
         vector<float> audio;
         if (!input_wav.empty()) {
-            // 长音频窗口路径冒烟测试：WAV -> 单声道 16k
+            // Long-audio window-path smoke test: WAV -> mono 16k
             AudioData wav = load_wav(input_wav);
             audio = to_mono_16k(wav, 16000);
-            cout << "  输入 WAV: " << input_wav << " -> " << audio.size() << " 样本 @16k" << endl;
+            cout << "  Input WAV: " << input_wav << " -> " << audio.size() << " samples @16k" << endl;
         }
         else {
             const string ref_input = ref_dir + "/input_16k.raw";
             if (!load_raw_f32(ref_input, audio) || audio.empty()) {
-                Logger::error("找不到/为空: " + ref_input + "（自检需要参考张量，随发行版不分发）");
+                Logger::error("Not found/empty: " + ref_input + " (self-test requires reference tensors, not shipped with the distribution)");
                 return 1;
             }
-            cout << "  输入样本: " << audio.size() << endl;
+            cout << "  Input samples: " << audio.size() << endl;
         }
 
         rvc::GgmlDevice device(device_id);
-        Logger::info("计算后端: " + device.name());
+        Logger::info("Compute backend: " + device.name());
 
         GgufModel model;
         model.load(model_path, device.backend());
@@ -310,32 +310,32 @@ namespace {
 
         Timer timer;
         rvc::rmvpe::Result result = extractor.infer(audio, 0.03f);
-        cout << "  推理耗时: " << timer.elapsed_ms() << " ms" << endl;
-        cout << "  帧数: " << result.frames << " (pad " << result.padded_frames << ")" << endl;
+        cout << "  Inference time: " << timer.elapsed_ms() << " ms" << endl;
+        cout << "  Frames: " << result.frames << " (pad " << result.padded_frames << ")" << endl;
         int voiced = 0;
         for (float v : result.f0) {
             if (v > 0.0f) ++voiced;
         }
-        cout << "  f0 发声帧: " << voiced << endl;
+        cout << "  f0 voiced frames: " << voiced << endl;
 
         if (!input_wav.empty()) {
-            // 长音频冒烟测试：落 mel/hidden/f0，避免覆盖 5s 对照产物
+            // Long-audio smoke test: dump mel/hidden/f0 without overwriting the 5s reference artifacts
             dump_raw_f32(ref_dir + "/cpp_rmvpe_long_mel.raw", result.mel);
             dump_raw_f32(ref_dir + "/cpp_rmvpe_long_hidden.raw", result.hidden);
             dump_raw_f32(ref_dir + "/cpp_rmvpe_long_f0.raw", result.f0);
-            cout << "  写出 cpp_rmvpe_long_{mel,hidden,f0}.raw" << endl;
+            cout << "  Wrote cpp_rmvpe_long_{mel,hidden,f0}.raw" << endl;
             return 0;
         }
         dump_raw_f32(ref_dir + "/cpp_rmvpe_mel.raw", result.mel);
         dump_raw_f32(ref_dir + "/cpp_rmvpe_hidden.raw", result.hidden);
         dump_raw_f32(ref_dir + "/cpp_rmvpe_hidden_padded.raw", result.hidden_padded);
         dump_raw_f32(ref_dir + "/cpp_rmvpe_f0.raw", result.f0);
-        cout << "  写出 cpp_rmvpe_{mel,hidden,hidden_padded,f0}.raw" << endl;
+        cout << "  Wrote cpp_rmvpe_{mel,hidden,hidden_padded,f0}.raw" << endl;
         return 0;
     }
 
     // ------------------------------------------------------------
-    // 全链路转换（P5）：WAV -> 16k -> 管线 -> WAV
+    // End-to-end conversion (P5): WAV -> 16k -> pipeline -> WAV
     // ------------------------------------------------------------
     int run_convert(const string& input_wav, const string& output_wav,
         const string& model_path, const string& model_dir,
@@ -346,11 +346,11 @@ namespace {
         const string rmvpe_path = rmvpe_path_in.empty() ? model_dir + "/rmvpe.gguf" : rmvpe_path_in;
         AudioData wav = load_wav(input_wav);
         vector<float> audio = to_mono_16k(wav, 16000);
-        cout << "  输入: " << input_wav << " (" << wav.sample_rate << "Hz/" << wav.num_channels
-            << "ch) -> 16k " << audio.size() << " 样本" << endl;
+        cout << "  Input: " << input_wav << " (" << wav.sample_rate << "Hz/" << wav.num_channels
+            << "ch) -> 16k " << audio.size() << " samples" << endl;
 
         rvc::GgmlDevice device(device_id);
-        Logger::info("计算后端: " + device.name());
+        Logger::info("Compute backend: " + device.name());
 
         GgufModel hubert_model;
         hubert_model.load(hubert_path, device.backend());
@@ -364,19 +364,19 @@ namespace {
         if (!index_path.empty() && opt.index_rate != 0.0f) {
             index.load(index_path, device.backend());
             opt.index = &index;
-            cout << "  索引: dim=" << index.dim() << " nlist=" << index.nlist()
-                << " ntotal=" << index.ntotal() << " 混合率=" << opt.index_rate << endl;
+            cout << "  Index: dim=" << index.dim() << " nlist=" << index.nlist()
+                << " ntotal=" << index.ntotal() << " mix rate=" << opt.index_rate << endl;
         }
 
         rvc::RvcPipeline pipeline(hubert_model, rmvpe_model, voice_model, device.backend());
         const auto& vcfg = pipeline.voice_config();
-        cout << "  模型: " << vcfg.version << " f0=" << vcfg.has_f0
+        cout << "  Model: " << vcfg.version << " f0=" << vcfg.has_f0
             << " sr=" << vcfg.sample_rate << " hop=" << vcfg.hop_samples << endl;
 
         Timer timer;
         rvc::ConvertResult result = pipeline.convert(audio, opt);
-        cout << "  转换耗时: " << timer.elapsed_ms() << " ms" << endl;
-        cout << "  输出: " << result.pcm.size() << " 样本 @" << result.sample_rate << endl;
+        cout << "  Conversion time: " << timer.elapsed_ms() << " ms" << endl;
+        cout << "  Output: " << result.pcm.size() << " samples @" << result.sample_rate << endl;
 
         const size_t slash = output_wav.find_last_of("/\\");
         if (slash != string::npos) {
@@ -384,19 +384,19 @@ namespace {
         }
         if (!save_wav_i16(output_wav, result.pcm.data(), 1, result.sample_rate,
             static_cast<uint64_t>(result.pcm.size()))) {
-            Logger::error("写入失败: " + output_wav);
+            Logger::error("Write failed: " + output_wav);
             return 1;
         }
-        Logger::info("已写出: " + output_wav);
+        Logger::info("Wrote: " + output_wav);
         return 0;
     }
 
     // ------------------------------------------------------------
-    // VITS 自检：参考输入（features/pitch/rnd/sine noise）-> 整图 -> 落盘
+    // VITS self-test: reference input (features/pitch/rnd/sine noise) -> full graph -> dump to disk
     // ------------------------------------------------------------
     int run_vits_selftest(const string& model_path, const string& ref_dir, int device_id) {
         if (!utils::file_exists(model_path)) {
-            Logger::error("找不到模型: " + model_path);
+            Logger::error("Model not found: " + model_path);
             return 1;
         }
         const string ref_features = ref_dir + "/model_features_upsampled.raw";
@@ -406,13 +406,13 @@ namespace {
         const string ref_sine_noise = ref_dir + "/model_sine_noise.raw";
         for (const auto& p : { ref_features, ref_rnd }) {
             if (!utils::file_exists(p)) {
-                Logger::error("找不到参考数据: " + p + "（自检需要参考张量，随发行版不分发）");
+                Logger::error("Reference data not found: " + p + " (self-test requires reference tensors, not shipped with the distribution)");
                 return 1;
             }
         }
 
         rvc::GgmlDevice device(device_id);
-        Logger::info("计算后端: " + device.name());
+        Logger::info("Compute backend: " + device.name());
 
         GgufModel model;
         model.load(model_path, device.backend());
@@ -425,39 +425,39 @@ namespace {
 
         vector<float> features;
         if (!load_raw_f32(ref_features, features) || features.empty()) {
-            Logger::error("读取 features 失败: " + ref_features);
+            Logger::error("Failed to read features: " + ref_features);
             return 1;
         }
         ggml_tensor* emb_phone = model.weight("enc_p.emb_phone.weight");
         if (!emb_phone) {
-            Logger::error("模型缺少 enc_p.emb_phone.weight");
+            Logger::error("Model is missing enc_p.emb_phone.weight");
             return 1;
         }
         const int feature_dim = static_cast<int>(emb_phone->ne[0]);
         if (features.size() % static_cast<size_t>(feature_dim) != 0) {
-            Logger::error("features 尺寸与模型输入维度不符（--model 与参考数据需匹配）");
+            Logger::error("features size does not match the model input dimension (--model and reference data must match)");
             return 1;
         }
         const int64_t frames = static_cast<int64_t>(features.size() / feature_dim);
-        cout << "  特征: " << frames << " 帧 × " << feature_dim << endl;
+        cout << "  Features: " << frames << " frames x " << feature_dim << endl;
 
         vector<int32_t> pitch;
         vector<float> pitchf;
         vector<float> sine;
         if (cfg.has_f0) {
             if (!load_raw_i32(ref_pitch, pitch)) {
-                Logger::error("读取 pitch 失败: " + ref_pitch);
+                Logger::error("Failed to read pitch: " + ref_pitch);
                 return 1;
             }
             pitch.resize(static_cast<size_t>(frames));
 
             if (!load_raw_f32(ref_pitchf, pitchf) || pitchf.size() < static_cast<size_t>(frames)) {
-                Logger::error("读取 pitchf 失败: " + ref_pitchf);
+                Logger::error("Failed to read pitchf: " + ref_pitchf);
                 return 1;
             }
             pitchf.resize(static_cast<size_t>(frames));
 
-            // SineGen（用注入噪声，保证与 Python 参考逐样本可对齐）
+            // SineGen (injected noise is used to guarantee sample-by-sample alignment with the Python reference)
             vector<float> sine_noise;
             const bool has_noise = load_raw_f32(ref_sine_noise, sine_noise) &&
                 sine_noise.size() == static_cast<size_t>(frames) * cfg.hop_samples;
@@ -465,7 +465,7 @@ namespace {
                 static_cast<int>(cfg.hop_samples), has_noise ? &sine_noise : nullptr, 1234);
             dump_raw_f32(ref_dir + "/cpp_model_sine_source.raw", sine);
 
-            // 合并激励：tanh(l_linear(sine))（主机侧）
+            // Merge excitation: tanh(l_linear(sine)) (host side)
             const auto lw = model.read_f32("dec.m_source.l_linear.weight");
             const auto lb = model.read_f32("dec.m_source.l_linear.bias");
             vector<float> merged(sine.size());
@@ -479,7 +479,7 @@ namespace {
         vector<float> noise;
         if (!load_raw_f32(ref_rnd, noise) ||
             noise.size() != static_cast<size_t>(frames) * cfg.inter_channels) {
-            Logger::error("读取 rnd 失败/尺寸不符: " + ref_rnd);
+            Logger::error("Failed to read rnd / size mismatch: " + ref_rnd);
             return 1;
         }
 
@@ -494,27 +494,27 @@ namespace {
 
         Timer timer;
         rvc::vits::Output out = synth.infer(input);
-        cout << "  推理耗时: " << timer.elapsed_ms() << " ms" << endl;
-        cout << "  音频样本: " << out.samples << " @" << out.sample_rate << endl;
+        cout << "  Inference time: " << timer.elapsed_ms() << " ms" << endl;
+        cout << "  Audio samples: " << out.samples << " @" << out.sample_rate << endl;
 
         dump_raw_f32(ref_dir + "/cpp_model_m_p.raw", out.m_p);
         dump_raw_f32(ref_dir + "/cpp_model_logs_p.raw", out.logs_p);
         dump_raw_f32(ref_dir + "/cpp_model_z_p.raw", out.z_p);
         dump_raw_f32(ref_dir + "/cpp_model_z.raw", out.z);
         dump_raw_f32(ref_dir + "/cpp_model_audio.raw", out.audio);
-        cout << "  写出 cpp_model_{m_p,logs_p,z_p,z,audio}.raw + cpp_model_sine_{source,merged}.raw" << endl;
+        cout << "  Wrote cpp_model_{m_p,logs_p,z_p,z,audio}.raw + cpp_model_sine_{source,merged}.raw" << endl;
         return 0;
     }
 
     // ------------------------------------------------------------
-    // 交互式向导（无命令行参数时进入；单次向导后退出）
+    // Interactive wizard (entered when there are no command-line arguments; exits after one run)
     // ------------------------------------------------------------
     std::string prompt_line(const std::string& label, const std::string& default_value) {
         std::cout << label;
         if (!default_value.empty()) {
-            std::cout << "（默认 " << default_value << "）";
+            std::cout << " (default " << default_value << ")";
         }
-        std::cout << "：";
+        std::cout << ": ";
         std::cout.flush();
         std::string line;
         if (!std::getline(std::cin, line)) {
@@ -536,7 +536,7 @@ namespace {
             }
             catch (...) {
             }
-            std::cout << "  输入无效，请输入整数。" << std::endl;
+            std::cout << "  Invalid input, please enter an integer." << std::endl;
         }
         return default_value;
     }
@@ -555,7 +555,7 @@ namespace {
             }
             catch (...) {
             }
-            std::cout << "  输入无效，请输入数字。" << std::endl;
+            std::cout << "  Invalid input, please enter a number." << std::endl;
         }
         return default_value;
     }
@@ -592,7 +592,7 @@ namespace {
             m.load_meta_only(path);
             const std::string version = m.meta_str("rvc.version", "");
             if (version.empty()) {
-                return false;   // 不是角色模型（hubert/rmvpe/index 等）
+                return false;   // not a character model (hubert/rmvpe/index, etc.)
             }
             e.path = path;
             e.file = file;
@@ -609,7 +609,7 @@ namespace {
         }
     }
 
-    // 在 model_dir 下为角色模型寻找同名检索索引（去掉量化后缀）
+    // Look for a retrieval index with the same name as the character model under model_dir (strip the quantization suffix)
     std::string find_index_for(const std::string& model_dir, const std::string& model_file) {
         const std::string stem = utils::stem(model_file);
         std::vector<std::string> candidates;
@@ -627,13 +627,13 @@ namespace {
         return {};
     }
 
-    // 量化档位（fp16 = 无后缀基础文件）
+    // Quant levels (fp16 = base file with no suffix)
     const std::vector<std::string>& quant_levels() {
         static const std::vector<std::string> k = { "fp16", "q8_0", "q5_1", "q4_1", "q4_0" };
         return k;
     }
 
-    // 去掉文件名中的量化后缀（guanguanV1.q8_0.gguf -> guanguanV1.gguf）
+    // Strip the quantization suffix from the filename (guanguanV1.q8_0.gguf -> guanguanV1.gguf)
     std::string strip_quant_suffix(const std::string& path) {
         std::string out = path;
         if (out.size() >= 5 && out.compare(out.size() - 5, 5, ".gguf") == 0) {
@@ -665,7 +665,7 @@ namespace {
         return base + "." + quant;
     }
 
-    // 从文件名识别量化档位（guanguanV1.q4_0.gguf -> q4_0；无后缀 -> fp16）
+    // Detect the quant level from the filename (guanguanV1.q4_0.gguf -> q4_0; no suffix -> fp16)
     std::string detect_quant(const std::string& file) {
         const std::string stem = utils::stem(file);
         for (const auto& q : quant_levels()) {
@@ -681,7 +681,7 @@ namespace {
 
     int run_interactive(const std::string& model_dir, const std::string& input_dir,
         int default_device) {
-        // ---------- 1) 角色模型 ----------
+        // ---------- 1) Character model ----------
         auto files = utils::list_files(model_dir, ".gguf");
         std::vector<VoiceModelEntry> models;
         for (const auto& f : files) {
@@ -694,10 +694,10 @@ namespace {
             }
         }
         if (models.empty()) {
-            Logger::error("models/ 下未找到角色模型（.gguf）！请先用 scripts/export_gguf.py 转换。");
+            Logger::error("No character model (.gguf) found under models/! Convert one with scripts/export_gguf.py first.");
             return 1;
         }
-        std::cout << "可用角色模型（" << model_dir << "/）：" << std::endl;
+        std::cout << "Available character models (" << model_dir << "/):" << std::endl;
         for (size_t i = 0; i < models.size(); ++i) {
             const auto& m = models[i];
             std::cout << "  " << std::setw(3) << (i + 1) << ". " << std::left << std::setw(34)
@@ -709,7 +709,7 @@ namespace {
         }
         std::cout << std::endl;
 
-        std::string sel = prompt_line("请选择角色模型（序号或文件名）", "1");
+        std::string sel = prompt_line("Select a character model (index or filename)", "1");
         VoiceModelEntry model;
         {
             bool ok = false;
@@ -733,12 +733,12 @@ namespace {
                 }
             }
             if (!ok) {
-                Logger::error("无效的模型选择：" + sel);
+                Logger::error("Invalid model selection: " + sel);
                 return 1;
             }
         }
 
-        // ---------- 1.5) 量化档位（hubert/rmvpe/角色模型统一）----------
+        // ---------- 1.5) Quant level (shared by hubert/rmvpe/character model) ----------
         std::vector<std::string> available_levels;
         for (const auto& q : quant_levels()) {
             const std::string h = q == "fp16" ? model_dir + "/hubert.gguf"
@@ -758,12 +758,12 @@ namespace {
             quant = available_levels.empty() ? "fp16" : available_levels.front();
         }
         if (available_levels.size() > 1) {
-            std::cout << "可用量化档位：";
+            std::cout << "Available quant levels: ";
             for (size_t i = 0; i < available_levels.size(); ++i) {
                 std::cout << (i ? ", " : "") << available_levels[i];
             }
             std::cout << std::endl;
-            const std::string sel_q = prompt_line("请选择量化档位（hubert/rmvpe/角色模型统一）", quant);
+            const std::string sel_q = prompt_line("Select a quant level (shared by hubert/rmvpe/character model)", quant);
             bool valid = false;
             for (const auto& q : available_levels) {
                 if (q == sel_q) {
@@ -772,7 +772,7 @@ namespace {
                 }
             }
             if (!valid) {
-                Logger::warn("未找到档位 " + sel_q + "，使用 " + quant);
+                Logger::warn("Quant level " + sel_q + " not found, using " + quant);
             }
         }
         std::string hubert_path = with_quant_suffix(model_dir + "/hubert.gguf", quant);
@@ -784,20 +784,20 @@ namespace {
                 voice_path = candidate;
             }
             else {
-                Logger::warn("未找到角色模型量化档位文件: " + candidate + "，改用 " + model.path);
+                Logger::warn("Character model quant level file not found: " + candidate + ", falling back to " + model.path);
             }
         }
         std::cout << std::endl;
 
-        // ---------- 2) 输入音频 ----------
+        // ---------- 2) Input audio ----------
         auto wavs = utils::list_files(input_dir, ".wav");
-        std::cout << "可用输入音频（" << input_dir << "/）：" << std::endl;
+        std::cout << "Available input audio (" << input_dir << "/):" << std::endl;
         for (size_t i = 0; i < wavs.size(); ++i) {
             std::cout << "  " << std::setw(3) << (i + 1) << ". " << wavs[i] << std::endl;
         }
         std::cout << std::endl;
         const std::string input_default = wavs.empty() ? "" : "1";
-        std::string input_sel = prompt_line("请选择输入音频（序号或路径）", input_default);
+        std::string input_sel = prompt_line("Select input audio (index or path)", input_default);
         std::string input_wav;
         if (!input_sel.empty() && input_sel.find_first_not_of("0123456789") == std::string::npos) {
             const int idx = std::stoi(input_sel);
@@ -809,25 +809,25 @@ namespace {
             input_wav = input_sel;
         }
         if (input_wav.empty() || !utils::file_exists(input_wav)) {
-            Logger::error("输入音频不存在：" + input_wav);
+            Logger::error("Input audio does not exist: " + input_wav);
             return 1;
         }
 
-        // ---------- 3) 设备 ----------
+        // ---------- 3) Device ----------
         const auto gpus = rvc::list_gpu_devices();
-        std::cout << std::endl << "可用推理设备：" << std::endl;
+        std::cout << std::endl << "Available inference devices:" << std::endl;
         for (const auto& d : gpus) {
             std::cout << "  " << std::setw(3) << d.index << ". " << d.name
                 << "  (" << d.description << ")" << std::endl;
         }
-        std::cout << "   99. CPU（软件回退）" << std::endl;
+        std::cout << "   99. CPU (software fallback)" << std::endl;
         const int device_default = gpus.empty() ? 99 : default_device;
-        const int device_id = prompt_int("请选择设备", device_default);
+        const int device_id = prompt_int("Select a device", device_default);
 
-        // ---------- 4) 转换参数 ----------
+        // ---------- 4) Conversion parameters ----------
         std::cout << std::endl;
         rvc::ConvertOptions opt;
-        opt.f0_up_key = prompt_int("变调半音数", 0);
+        opt.f0_up_key = prompt_int("Pitch shift in semitones", 0);
         if (model.n_spk > 1) {
             std::string names;
             for (size_t i = 0; i < model.speaker_names.size() && i < 8; ++i) {
@@ -836,32 +836,32 @@ namespace {
                 }
             }
             if (!names.empty()) {
-                std::cout << "  可用说话人：" << names << std::endl;
+                std::cout << "  Available speakers: " << names << std::endl;
             }
-            opt.sid = prompt_int("说话人 ID", 0);
+            opt.sid = prompt_int("Speaker ID", 0);
         }
 
         const std::string index_path = find_index_for(model_dir, model.file);
         std::string use_index;
         if (!index_path.empty()) {
-            std::cout << "  发现检索索引：" << index_path << std::endl;
-            use_index = prompt_line("索引混合率 0~1（0 = 不使用）", "0");
+            std::cout << "  Retrieval index found: " << index_path << std::endl;
+            use_index = prompt_line("Index mix rate 0~1 (0 = disabled)", "0");
             opt.index_rate = std::stof(use_index);
             if (opt.index_rate < 0.0f) opt.index_rate = 0.0f;
             if (opt.index_rate > 1.0f) opt.index_rate = 1.0f;
         }
 
-        opt.rms_mix_rate = prompt_float("RMS 混合率 0~1（1 = 不混合）", 0.75f);
-        opt.protect = prompt_float("清音保护 0~0.5", 0.33f);
+        opt.rms_mix_rate = prompt_float("RMS mix rate 0~1 (1 = no mixing)", 0.75f);
+        opt.protect = prompt_float("Unvoiced protection 0~0.5", 0.33f);
 
-        const std::string adv = prompt_line("是否修改高级参数（重采样等）？(y/N)", "n");
+        const std::string adv = prompt_line("Modify advanced parameters (resampling, etc.)? (y/N)", "n");
         int resample_sr = 0;
         if (!adv.empty() && (adv[0] == 'y' || adv[0] == 'Y')) {
-            resample_sr = prompt_int("输出重采样率（0 = 模型采样率）", 0);
+            resample_sr = prompt_int("Output resample rate (0 = model sample rate)", 0);
         }
         opt.resample_sr = resample_sr;
 
-        // 输出路径：output/<输入名>_<模型短名>[_<量化档位>].wav
+        // Output path: output/<input name>_<model short name>[_<quant level>].wav
         std::string model_tag = utils::stem(model.file);
         if (quant != "fp16") {
             model_tag = utils::stem(strip_quant_suffix(model.file));
@@ -869,27 +869,27 @@ namespace {
         }
         const std::string output_wav = "output/" + utils::stem(input_wav) + "_" + model_tag + ".wav";
 
-        // ---------- 5) 确认 ----------
+        // ---------- 5) Confirm ----------
         std::cout << std::endl;
         std::cout << "----------------------------------------" << std::endl;
-        std::cout << "  角色模型 : " << voice_path << "  (" << model.version
+        std::cout << "  Model:         " << voice_path << "  (" << model.version
             << " " << (model.sample_rate / 1000) << "kHz"
             << (model.has_f0 ? " f0" : " non-f0") << ")" << std::endl;
-        std::cout << "  量化档位 : " << quant << "（hubert: " << hubert_path
-            << "，rmvpe: " << rmvpe_path << "）" << std::endl;
-        std::cout << "  输入音频 : " << input_wav << std::endl;
-        std::cout << "  输出文件 : " << output_wav << std::endl;
-        std::cout << "  设备     : " << (device_id == 99 ? "CPU" : ("GPU " + std::to_string(device_id))) << std::endl;
-        std::cout << "  变调     : " << opt.f0_up_key << " 半音";
-        if (opt.sid != 0) std::cout << "，说话人 " << opt.sid;
-        if (opt.index_rate > 0.0f) std::cout << "，索引混合 " << opt.index_rate;
-        std::cout << "，RMS 混合 " << opt.rms_mix_rate << "，protect " << opt.protect;
-        if (opt.resample_sr > 0) std::cout << "，重采样 " << opt.resample_sr << "Hz";
+        std::cout << "  Quant level:   " << quant << " (hubert: " << hubert_path
+            << ", rmvpe: " << rmvpe_path << ")" << std::endl;
+        std::cout << "  Input audio:   " << input_wav << std::endl;
+        std::cout << "  Output file:   " << output_wav << std::endl;
+        std::cout << "  Device:        " << (device_id == 99 ? "CPU" : ("GPU " + std::to_string(device_id))) << std::endl;
+        std::cout << "  Pitch shift:   " << opt.f0_up_key << " semitones";
+        if (opt.sid != 0) std::cout << ", speaker " << opt.sid;
+        if (opt.index_rate > 0.0f) std::cout << ", index mix " << opt.index_rate;
+        std::cout << ", RMS mix " << opt.rms_mix_rate << ", protect " << opt.protect;
+        if (opt.resample_sr > 0) std::cout << ", resample " << opt.resample_sr << "Hz";
         std::cout << std::endl;
         std::cout << "----------------------------------------" << std::endl;
-        const std::string go = prompt_line("按 Enter 开始转换（输入 n 取消）", "");
+        const std::string go = prompt_line("Press Enter to start conversion (type n to cancel)", "");
         if (!go.empty() && (go[0] == 'n' || go[0] == 'N')) {
-            std::cout << "已取消。" << std::endl;
+            std::cout << "Canceled." << std::endl;
             return 0;
         }
 
@@ -898,7 +898,7 @@ namespace {
         const int rc = run_convert(input_wav, output_wav, voice_path, model_dir,
             index_path, device_id, opt, pcfg, hubert_path, rmvpe_path);
         if (rc == 0) {
-            std::cout << std::endl << "转换完成：" << output_wav << std::endl;
+            std::cout << std::endl << "Conversion complete: " << output_wav << std::endl;
         }
         return rc;
     }
@@ -909,15 +909,15 @@ int main(int argc, char* argv[]) {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
 
-    // Intel 驱动 Vulkan 整数点积路径在量化模型多次图执行时可能产生 NaN/零输出
-    // （实测，ggml 0.18/0.23 均复现）；默认禁用，可用 RVC_VK_ENABLE_INTDOT=1 恢复。
+    // On Intel drivers, the Vulkan integer dot-product path may produce NaN/zero output when a quantized model runs the graph repeatedly
+    // (observed in testing; reproduced on both ggml 0.18 and 0.23); disabled by default, re-enable with RVC_VK_ENABLE_INTDOT=1.
     if (!getenv("RVC_VK_ENABLE_INTDOT")) {
         _putenv_s("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
     }
 
-    // Vulkan fp16 计算路径（含 im2col/GEMM 的 fp16 累加）会显著放大误差：
-    // P4 实测音频 SNR 由 ~60dB 降至 ~33dB（corr 仍达标但听感风险增加），
-    // 且部分 Intel 核显上速度几乎无差异；默认禁用，可用 RVC_VK_ENABLE_F16=1 恢复。
+    // The Vulkan fp16 compute path (including fp16 accumulation in im2col/GEMM) significantly amplifies error:
+    // In P4 testing, audio SNR dropped from ~60dB to ~33dB (corr still meets spec, but perceptual risk increases),
+    // and on some Intel integrated GPUs there is almost no speed difference; disabled by default, re-enable with RVC_VK_ENABLE_F16=1.
     if (!getenv("RVC_VK_ENABLE_F16")) {
         _putenv_s("GGML_VK_DISABLE_F16", "1");
     }
@@ -935,8 +935,8 @@ int main(int argc, char* argv[]) {
     bool rmvpe_selftest = false;
     bool vits_selftest = false;
     bool list_devices = false;
-    bool interactive = false;       // 未给任何动作参数时自动进入向导
-    bool interactive_flag = false;  // --interactive 强制
+    bool interactive = false;       // enter the wizard automatically when no action argument is given
+    bool interactive_flag = false;  // --interactive forces it
     bool action_given = false;
     int device_id = 99;
     int split_query = 5, split_center = 30, split_max = 32;
@@ -1046,15 +1046,15 @@ int main(int argc, char* argv[]) {
     interactive = interactive_flag || !action_given;
 
     cout << "================================================" << endl;
-    cout << "  RVC-GGML - ggml RVC 语音转换" << endl;
-    cout << "  硬件加速推理 (Vulkan / CUDA / CPU)" << endl;
+    cout << "  RVC-GGML - ggml RVC voice conversion" << endl;
+    cout << "  Hardware-accelerated inference (Vulkan / CUDA / CPU)" << endl;
     cout << "================================================" << endl;
     cout << endl;
 
     try {
         if (audio_selftest) {
             if (input_wav.empty()) {
-                Logger::error("--audio-selftest 需要 --input <wav>");
+                Logger::error("--audio-selftest requires --input <wav>");
                 return 1;
             }
             return run_audio_selftest(input_wav, "output/selftest", split_query, split_center, split_max);
@@ -1070,11 +1070,11 @@ int main(int argc, char* argv[]) {
         }
         if (list_devices) {
             const auto devices = rvc::list_gpu_devices();
-            cout << "可用 GPU 设备（--device <id>）：" << endl;
+            cout << "Available GPU devices (--device <id>):" << endl;
             for (const auto& d : devices) {
                 cout << "  " << d.index << ": " << d.name << "  (" << d.description << ")" << endl;
             }
-            cout << "  CPU 回退：--device 99" << endl;
+            cout << "  CPU fallback: --device 99" << endl;
             return 0;
         }
         if (!input_wav.empty()) {
@@ -1088,11 +1088,11 @@ int main(int argc, char* argv[]) {
                 voice_path = with_quant_suffix(model_path, quant);
                 for (const auto& p : { hubert_path, rmvpe_path, voice_path }) {
                     if (!utils::file_exists(p)) {
-                        Logger::error("量化档位文件不存在: " + p);
+                        Logger::error("Quant level file does not exist: " + p);
                         return 1;
                     }
                 }
-                Logger::info("量化档位: " + quant);
+                Logger::info("Quant level: " + quant);
             }
             return run_convert(input_wav, output_wav, voice_path, model_dir,
                 index_path, device_id, convert_opt, pipeline_cfg, hubert_path, rmvpe_path);
@@ -1100,7 +1100,7 @@ int main(int argc, char* argv[]) {
 
         if (interactive) {
             const int rc = run_interactive(model_dir, "input", device_id == 99 ? 0 : device_id);
-            cout << endl << "按 Enter 键退出...";
+            cout << endl << "Press Enter to exit...";
             string dummy;
             getline(cin, dummy);
             return rc;
@@ -1110,7 +1110,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     catch (const exception& e) {
-        Logger::error("发生错误: " + string(e.what()));
+        Logger::error("Error: " + string(e.what()));
         return 1;
     }
 }

@@ -1,4 +1,4 @@
-// RVC-Train-GGML - flow（ResidualCouplingBlock 正向）实现（src/model/flow.cpp）
+// RVC-Train-GGML - flow (ResidualCouplingBlock forward) implementation (src/model/flow.cpp)
 #include "model/flow.h"
 
 #include <cstdio>
@@ -14,7 +14,7 @@ using namespace traincpp;
 Tensor* require_param(const ModelParams& params, const std::string& name, std::string* err) {
     Tensor* t = params.find(name.c_str());
     if (t == nullptr && err != nullptr) {
-        *err = "缺失参数: " + name;
+        *err = "missing parameter: " + name;
     }
     return t;
 }
@@ -38,13 +38,13 @@ void wire_conv1d(Conv1d* layer, Tensor* weight, Tensor* bias, const char* name) 
 bool flow_load(const ModelParams& params, const FlowConfig& cfg, FlowModule* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "flow 输出为空";
+            *err = "flow output is null";
         }
         return false;
     }
     if (cfg.channels <= 0 || cfg.channels % 2 != 0 || cfg.n_flows <= 0 || cfg.n_layers <= 0) {
         if (err != nullptr) {
-            *err = "flow 配置非法（channels 必须为正偶数；n_flows/n_layers > 0）";
+            *err = "invalid flow config (channels must be a positive even number; n_flows/n_layers > 0)";
         }
         return false;
     }
@@ -75,8 +75,8 @@ bool flow_load(const ModelParams& params, const FlowConfig& cfg, FlowModule* out
         wire_conv1d(&L.pre, pw, pb, "flow.pre");
         if (pw->ne[2] != cfg.hidden_channels || pw->ne[1] != cfg.channels / 2) {
             if (err != nullptr) {
-                *err = base + ".pre.weight 形状与配置不符（期望 ne=[1," +
-                       std::to_string(cfg.channels / 2) + "," + std::to_string(cfg.hidden_channels) + "]）";
+                *err = base + ".pre.weight shape does not match config (expected ne=[1," +
+                       std::to_string(cfg.channels / 2) + "," + std::to_string(cfg.hidden_channels) + "]";
             }
             return false;
         }
@@ -104,21 +104,21 @@ bool flow_load(const ModelParams& params, const FlowConfig& cfg, FlowModule* out
 bool flow_fill_flip_perm(Tensor* perm, std::string* err) {
     if (perm == nullptr || perm->type != TYPE_F32 || perm->ne[0] != perm->ne[1]) {
         if (err != nullptr) {
-            *err = "flip 置换矩阵张量非法（需要方阵 F32）";
+            *err = "invalid flip permutation matrix tensor (must be a square F32 matrix)";
         }
         return false;
     }
     float* p = tensor_data_f32(perm);
     if (p == nullptr) {
         if (err != nullptr) {
-            *err = "flip 置换矩阵未分配（需在 buffer 分配后调用）";
+            *err = "flip permutation matrix not allocated (must be called after buffer allocation)";
         }
         return false;
     }
     const int64_t c = perm->ne[0];
     for (int64_t i = 0; i < c; ++i) {
         for (int64_t j = 0; j < c; ++j) {
-            // mul_mat(P, x) = P^T·x；P^T[i][j] = P[j + c*i]，置 1 当且仅当 j + i = c - 1
+            // mul_mat(P, x) = P^T·x; P^T[i][j] = P[j + c*i], set to 1 iff j + i = c - 1
             p[j + c * i] = (j + i == c - 1) ? 1.0f : 0.0f;
         }
     }
@@ -128,7 +128,7 @@ bool flow_fill_flip_perm(Tensor* perm, std::string* err) {
 Tensor* flow_forward(Context* ctx, const FlowModule& flow, Tensor* x, Tensor* x_mask, Tensor* g,
                      Tensor* perm, FlowCaptures* caps) {
     if (ctx == nullptr || x == nullptr || x_mask == nullptr || perm == nullptr) {
-        std::printf("[flow] 输入为空\n");
+        std::printf("[flow] null input\n");
         return nullptr;
     }
     const int64_t frames   = x->ne[0];
@@ -136,12 +136,12 @@ Tensor* flow_forward(Context* ctx, const FlowModule& flow, Tensor* x, Tensor* x_
     const int64_t batch    = x->ne[2];
     const int64_t half     = channels / 2;
     if (channels != flow.cfg.channels || channels % 2 != 0) {
-        std::printf("[flow] x 通道 %lld != channels %lld\n", (long long) channels,
+        std::printf("[flow] x channels %lld != channels %lld\n", (long long) channels,
                     (long long) flow.cfg.channels);
         return nullptr;
     }
     if (perm->ne[0] != channels || perm->ne[1] != channels) {
-        std::printf("[flow] perm 形状 [%lld,%lld] != [%lld,%lld]\n", (long long) perm->ne[0],
+        std::printf("[flow] perm shape [%lld,%lld] != [%lld,%lld]\n", (long long) perm->ne[0],
                     (long long) perm->ne[1], (long long) channels, (long long) channels);
         return nullptr;
     }
@@ -155,7 +155,7 @@ Tensor* flow_forward(Context* ctx, const FlowModule& flow, Tensor* x, Tensor* x_
     for (size_t li = 0; li < flow.layers.size(); ++li) {
         const FlowLayer& L = flow.layers[li];
 
-        // 通道对半切（视图 + cont，避免非连续输入喂卷积）
+        // Split channels in half (view + cont, avoid feeding non-contiguous input to convolutions)
         Tensor* x0 = cont(ctx, view_3d(ctx, cur, frames, half, batch, 0));
         Tensor* x1 = cont(ctx, view_3d(ctx, cur, frames, half, batch,
                                        static_cast<size_t>(half) * cur->nb[1]));
@@ -186,7 +186,7 @@ Tensor* flow_forward(Context* ctx, const FlowModule& flow, Tensor* x, Tensor* x_
             caps->stats.push_back(stats);
         }
 
-        // 正向：x1 = stats·mask + x1·mask
+        // forward: x1 = stats·mask + x1·mask
         Tensor* m = mul(ctx, stats, x_mask);
         Tensor* x1n = add(ctx, mul(ctx, x1, x_mask), m);
         Tensor* cat = concat(ctx, x0, x1n, 1);
@@ -194,8 +194,8 @@ Tensor* flow_forward(Context* ctx, const FlowModule& flow, Tensor* x, Tensor* x_
             return nullptr;
         }
 
-        // Flip：沿通道翻转。mul_mat(P,·) 的行索引对应 ne0，因此先把通道维换到 ne0：
-        //   [T,C,B] → transpose → [C,T,B] → reshape → [C, T·B] → mul_mat(P) → 换回
+        // Flip: flip along channels. mul_mat(P,·) row indices correspond to ne0, so move the channel dim to ne0 first:
+        //   [T,C,B] -> transpose -> [C,T,B] -> reshape -> [C, T·B] -> mul_mat(P) -> back
         Tensor* ct   = cont(ctx, transpose(ctx, cat));
         if (ct == nullptr) {
             return nullptr;

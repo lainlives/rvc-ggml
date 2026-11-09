@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 训练态 GGUF 装载实现（src/model/weights.cpp）
+// RVC-Train-GGML - training-state GGUF loading implementation (src/model/weights.cpp)
 #include "model/weights.h"
 
 #include <cstdio>
@@ -59,7 +59,7 @@ TrainWeights* TrainWeights::open(const std::string& path, std::string* err) {
     GgufFile* f = gguf_open(path.c_str(), /*load_data=*/true);
     if (f == nullptr) {
         if (err != nullptr) {
-            *err = "无法打开/解析 GGUF: " + path;
+            *err = "failed to open/parse GGUF: " + path;
         }
         return nullptr;
     }
@@ -107,7 +107,7 @@ bool TrainWeights::tensor_ne(const char* name, std::array<int64_t, 4>* ne) const
 Type TrainWeights::tensor_type(const char* name) const {
     const int64_t idx = gguf_find_tensor(file_, name);
     if (idx < 0) {
-        std::printf("[weights] 张量不存在: %s\n", name);
+        std::printf("[weights] tensor does not exist: %s\n", name);
         return TYPE_F32;
     }
     const GgufTensorInfo* info = gguf_tensor_info(file_, idx);
@@ -160,7 +160,7 @@ bool TrainWeights::read_meta(TrainMeta* meta) const {
 
 Tensor* TrainWeights::new_tensor(Context* ctx, const char* name) const {
     if (!has(name)) {
-        std::printf("[weights] 张量不存在: %s\n", name);
+        std::printf("[weights] tensor does not exist: %s\n", name);
         return nullptr;
     }
     return gguf_new_tensor(ctx, file_, name, TYPE_F32);
@@ -169,21 +169,21 @@ Tensor* TrainWeights::new_tensor(Context* ctx, const char* name) const {
 bool TrainWeights::load(Tensor* dst, const char* name, std::string* err) const {
     if (dst == nullptr) {
         if (err != nullptr) {
-            *err = "目标张量为空";
+            *err = "destination tensor is null";
         }
         return false;
     }
     const int64_t idx = gguf_find_tensor(file_, name);
     if (idx < 0) {
         if (err != nullptr) {
-            *err = std::string("缺失张量: ") + name;
+            *err = std::string("missing tensor: ") + name;
         }
         return false;
     }
     const GgufTensorInfo* info = gguf_tensor_info(file_, idx);
     if (info == nullptr) {
         if (err != nullptr) {
-            *err = std::string("张量信息损坏: ") + name;
+            *err = std::string("corrupt tensor info: ") + name;
         }
         return false;
     }
@@ -193,7 +193,7 @@ bool TrainWeights::load(Tensor* dst, const char* name, std::string* err) const {
             if (err != nullptr) {
                 char buf[512];
                 std::snprintf(buf, sizeof(buf),
-                              "形状不符: %s 文件 ne=[%lld,%lld,%lld,%lld] 目标 ne=[%lld,%lld,%lld,%lld]",
+                              "shape mismatch: %s file ne=[%lld,%lld,%lld,%lld] dst ne=[%lld,%lld,%lld,%lld]",
                               name,
                               (long long) info->ne[0], (long long) info->ne[1],
                               (long long) info->ne[2], (long long) info->ne[3],
@@ -207,14 +207,14 @@ bool TrainWeights::load(Tensor* dst, const char* name, std::string* err) const {
 
     if (dst->type != TYPE_F32) {
         if (err != nullptr) {
-            *err = std::string("目标张量类型必须为 F32: ") + name;
+            *err = std::string("destination tensor type must be F32: ") + name;
         }
         return false;
     }
 
     if (!gguf_load_tensor(file_, name, dst)) {
         if (err != nullptr) {
-            *err = std::string("gguf_load_tensor 失败: ") + name;
+            *err = std::string("gguf_load_tensor failed: ") + name;
         }
         return false;
     }

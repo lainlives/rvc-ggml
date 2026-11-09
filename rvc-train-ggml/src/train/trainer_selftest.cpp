@@ -1,7 +1,7 @@
-// RVC-Train-GGML - M5-3 训练循环自检实现（src/train/trainer_selftest.cpp）
+// RVC-Train-GGML - M5-3 training loop self-test implementation (src/train/trainer_selftest.cpp)
 //
-// 门 G-5.3：N 步 loss 有限；checkpoint save→load 往返（参数/step/lr/RNG）一致。
-// 强验证：save 后再跑一步（A），载入后同位置再跑一步（B），要求 6 loss 逐位一致。
+// Gate G-5.3: N steps with finite loss; checkpoint save->load round trip (parameters/step/lr/RNG) consistent.
+// Strong verification: after save run one more step (A); after load run one step at the same position (B); the 6 losses must be bit-identical.
 #include "train/trainer_selftest.h"
 
 #include "train/trainer.h"
@@ -39,11 +39,11 @@ TrainerConfig make_selftest_config(const std::string& weights_g, const std::stri
                                    int64_t steps, int64_t bucket, int64_t batch, int64_t disc_len,
                                    int64_t grad_accum, const std::string& config_path) {
     TrainerConfig cfg;
-    // V2-6：非空时以配置文件为基底（train/data/model 段），随后覆盖测试参数。
+    // V2-6: when non-empty, use the config file as the base (train/data/model sections), then override test parameters.
     if (!config_path.empty()) {
         std::string cerr;
         if (!trainer_config_from_json(config_path, &cfg, &cerr)) {
-            std::printf("[trainer-selftest] 读取配置失败（回退内置默认）: %s\n", cerr.c_str());
+            std::printf("[trainer-selftest] failed to read config (falling back to built-in defaults): %s\n", cerr.c_str());
             cfg = TrainerConfig{};
         }
     }
@@ -71,14 +71,14 @@ int run_trainer_selftest(const std::string& weights_g, const std::string& weight
                          traincpp::Device* dev, int64_t steps, int64_t bucket, int64_t batch,
                          int64_t disc_len, int64_t grad_accum, const std::string& config_path) {
     if (dev == nullptr) {
-        std::printf("[trainer-selftest] 无可用设备\n");
+        std::printf("[trainer-selftest] no usable device\n");
         return 2;
     }
     if (steps <= 0) {
-        std::printf("[trainer-selftest] --steps 必须 >= 1\n");
+        std::printf("[trainer-selftest] --steps must be >= 1\n");
         return 2;
     }
-    std::printf("[trainer-selftest] 设备=%s steps=%lld bucket=%lld batch=%lld disc_len=%lld "
+    std::printf("[trainer-selftest] device=%s steps=%lld bucket=%lld batch=%lld disc_len=%lld "
                 "grad_accum=%lld\n",
                 dev->props().name.c_str(), (long long) steps, (long long) bucket,
                 (long long) batch, (long long) disc_len, (long long) (grad_accum > 0 ? grad_accum : 1));
@@ -89,15 +89,15 @@ int run_trainer_selftest(const std::string& weights_g, const std::string& weight
     int failed = 0;
     int64_t checked = 0;
 
-    // ---------------- A：训练 steps 步 ----------------
+    // ---------------- A: train steps steps ----------------
     std::unique_ptr<Trainer> a(Trainer::create(cfg, dev, &err));
     if (a == nullptr) {
-        std::printf("[trainer-selftest] A 创建失败: %s\n", err.c_str());
+        std::printf("[trainer-selftest] A create failed: %s\n", err.c_str());
         return 1;
     }
     {
         const TrainStepMemory m = a->train_step()->memory();
-        std::printf("[trainer-selftest] A：samples=%lld skipped=%lld steps/epoch=%lld "
+        std::printf("[trainer-selftest] A: samples=%lld skipped=%lld steps/epoch=%lld "
                     "buf_g=%.1f buf_d=%.1f MiB\n",
                     (long long) a->trainable_samples(), (long long) a->skipped_samples(),
                     (long long) a->steps_per_epoch(),
@@ -106,7 +106,7 @@ int run_trainer_selftest(const std::string& weights_g, const std::string& weight
     }
     for (int64_t i = 0; i < steps; ++i) {
         if (!a->run_one_step(&err)) {
-            std::printf("[trainer-selftest] A step %lld 失败: %s\n", (long long) (i + 1), err.c_str());
+            std::printf("[trainer-selftest] A step %lld failed: %s\n", (long long) (i + 1), err.c_str());
             return 1;
         }
         const TrainStepLosses& L = a->last_losses();
@@ -119,29 +119,29 @@ int run_trainer_selftest(const std::string& weights_g, const std::string& weight
                     "loss_gen=%.6f loss_fm=%.6f loss_mel=%.6f loss_kl=%.6f %s\n",
                     (long long) (i + 1), (double) a->lr_g(), (double) L.loss_disc,
                     (double) L.loss_gen_all, (double) L.loss_gen, (double) L.loss_fm,
-                    (double) L.loss_mel, (double) L.loss_kl, fin ? "有限 OK" : "[FAIL] 非有限");
+                    (double) L.loss_mel, (double) L.loss_kl, fin ? "finite OK" : "[FAIL] not finite");
     }
 
-    // ---------------- 保存 + A 侧 verify + 存档点状态 ----------------
+    // ---------------- save + verify on A's side + save-point state ----------------
     const std::string ckpt = a->checkpoint_path();
     if (!a->save_checkpoint(ckpt, &err)) {
         std::printf("[trainer-selftest] [FAIL] %s\n", err.c_str());
         return 1;
     }
     if (!a->verify_checkpoint_memory(ckpt, &err)) {
-        std::printf("[trainer-selftest] [FAIL] A 侧 checkpoint_verify: %s\n", err.c_str());
+        std::printf("[trainer-selftest] [FAIL] checkpoint_verify on A's side: %s\n", err.c_str());
         ++failed;
     } else {
-        std::printf("[trainer-selftest] A 侧 checkpoint_verify OK（参数/step/lr/RNG 与文件一致）\n");
+        std::printf("[trainer-selftest] checkpoint_verify on A's side OK (parameters/step/lr/RNG match the file)\n");
     }
     const int64_t step_save = a->step_count();
     const float lr_save_g   = a->lr_g();
     const float lr_save_d   = a->lr_d();
     const uint64_t rng_save = a->rng_state();
 
-    // A 存档后再跑一步（与 B 载入后的下一步对比）
+    // After A's save, run one more step (to compare against B's first step after load)
     if (!a->run_one_step(&err)) {
-        std::printf("[trainer-selftest] A 存档后单步失败: %s\n", err.c_str());
+        std::printf("[trainer-selftest] A single step after save failed: %s\n", err.c_str());
         return 1;
     }
     const TrainStepLosses loss_next_a = a->last_losses();
@@ -150,58 +150,58 @@ int run_trainer_selftest(const std::string& weights_g, const std::string& weight
     const uint64_t rng_after_a   = a->rng_state();
     a.reset();
 
-    // ---------------- B：全新 Trainer 载入 checkpoint ----------------
+    // ---------------- B: fresh Trainer loads the checkpoint ----------------
     TrainerConfig cfg_b = cfg;
     cfg_b.resume = ckpt;
     std::unique_ptr<Trainer> b(Trainer::create(cfg_b, dev, &err));
     if (b == nullptr) {
-        std::printf("[trainer-selftest] [FAIL] B 创建/载入失败: %s\n", err.c_str());
+        std::printf("[trainer-selftest] [FAIL] B create/load failed: %s\n", err.c_str());
         return 1;
     }
-    std::printf("[trainer-selftest] B：载入后 step=%lld epoch=%lld lr_g=%.6e lr_d=%.6e "
-                "rng=0x%016llx（期望 step=%lld lr_g=%.6e lr_d=%.6e rng=0x%016llx）\n",
+    std::printf("[trainer-selftest] B: after load step=%lld epoch=%lld lr_g=%.6e lr_d=%.6e "
+                "rng=0x%016llx (expected step=%lld lr_g=%.6e lr_d=%.6e rng=0x%016llx)\n",
                 (long long) b->step_count(), (long long) b->epoch_index(), (double) b->lr_g(),
                 (double) b->lr_d(), (unsigned long long) b->rng_state(), (long long) step_save,
                 (double) lr_save_g, (double) lr_save_d, (unsigned long long) rng_save);
     if (b->step_count() != step_save || b->lr_g() != lr_save_g || b->lr_d() != lr_save_d ||
         b->rng_state() != rng_save) {
-        std::printf("[trainer-selftest] [FAIL] 载入状态与存档点不一致\n");
+        std::printf("[trainer-selftest] [FAIL] loaded state does not match the save point\n");
         ++failed;
     } else {
-        std::printf("[trainer-selftest] 载入状态（step/lr/RNG）一致 OK\n");
+        std::printf("[trainer-selftest] loaded state (step/lr/RNG) matches OK\n");
     }
     if (!b->verify_checkpoint_memory(ckpt, &err)) {
-        std::printf("[trainer-selftest] [FAIL] B 侧 checkpoint_verify: %s\n", err.c_str());
+        std::printf("[trainer-selftest] [FAIL] checkpoint_verify on B's side: %s\n", err.c_str());
         ++failed;
     } else {
-        std::printf("[trainer-selftest] B 侧 checkpoint_verify OK（参数/优化器状态逐元素一致）\n");
+        std::printf("[trainer-selftest] checkpoint_verify on B's side OK (parameters/optimizer state match element by element)\n");
     }
 
-    // B 跑存档后的同一步
+    // B runs the same step that followed the save
     if (!b->run_one_step(&err)) {
-        std::printf("[trainer-selftest] B 续跑单步失败: %s\n", err.c_str());
+        std::printf("[trainer-selftest] B single resumed step failed: %s\n", err.c_str());
         return 1;
     }
     const TrainStepLosses loss_next_b = b->last_losses();
     const double dmax = max_abs6(loss_next_a, loss_next_b);
-    std::printf("[trainer-selftest] 下一步 6 loss 对比：max_abs=%.3e（A step %lld → B step %lld）\n",
+    std::printf("[trainer-selftest] next-step 6-loss comparison: max_abs=%.3e (A step %lld -> B step %lld)\n",
                 dmax, (long long) step_after_a, (long long) b->step_count());
     if (dmax != 0.0) {
-        std::printf("[trainer-selftest] [FAIL] 续训下一步 loss 与 A 不一致\n");
+        std::printf("[trainer-selftest] [FAIL] next resumed-step loss does not match A\n");
         ++failed;
     } else {
-        std::printf("[trainer-selftest] 续训下一步 loss 逐位一致 OK\n");
+        std::printf("[trainer-selftest] next resumed-step loss bit-identical OK\n");
     }
     if (b->step_count() != step_after_a || b->lr_g() != lr_after_a_g ||
         b->rng_state() != rng_after_a) {
-        std::printf("[trainer-selftest] [FAIL] 续训后 step/lr/RNG 与 A 不一致\n");
+        std::printf("[trainer-selftest] [FAIL] step/lr/RNG after resume do not match A\n");
         ++failed;
     } else {
-        std::printf("[trainer-selftest] 续训后 step/lr/RNG 一致 OK\n");
+        std::printf("[trainer-selftest] step/lr/RNG after resume match OK\n");
     }
 
-    std::printf("[trainer-selftest] %s（loss 有限检查 %lld/%lld；失败项 %d）\n",
-                failed == 0 ? "通过" : "失败", (long long) (checked - failed),
+    std::printf("[trainer-selftest] %s (finite-loss checks %lld/%lld; failures %d)\n",
+                failed == 0 ? "PASSED" : "FAILED", (long long) (checked - failed),
                 (long long) checked, failed);
     return failed == 0 ? 0 : 1;
 }

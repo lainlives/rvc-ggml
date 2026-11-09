@@ -1,4 +1,4 @@
-// dataset.cpp —— M5 训练数据加载器实现（装配语义见 dataset.h 头注释）
+// dataset.cpp -- M5 training data loader implementation (assembly semantics in the dataset.h header comment)
 
 #include "data/dataset.h"
 
@@ -18,8 +18,8 @@ namespace data {
 
 namespace {
 
-constexpr int64_t kMaxPhoneFrames = 900;  // 官方 get_labels n_num 上界
-constexpr uint32_t kSineSeed = 1234;      // 噪声缺省时的 SineGen 种子（与 M3-3 一致）
+constexpr int64_t kMaxPhoneFrames = 900;  // upper bound of official get_labels n_num
+constexpr uint32_t kSineSeed = 1234;      // default SineGen seed when noise is not supplied (same as M3-3)
 
 bool validate_config(const TrainDataConfig& cfg, std::string* err) {
     auto fail = [&](const std::string& msg) {
@@ -29,24 +29,24 @@ bool validate_config(const TrainDataConfig& cfg, std::string* err) {
         return false;
     };
     if (cfg.exp_dir.empty()) {
-        return fail("TrainDataConfig.exp_dir 为空");
+        return fail("TrainDataConfig.exp_dir is empty");
     }
     if (cfg.batch_size <= 0 || cfg.segment_frames <= 0 || cfg.segment_samples <= 0) {
-        return fail("batch_size/segment_frames/segment_samples 必须 > 0");
+        return fail("batch_size/segment_frames/segment_samples must be > 0");
     }
     if (cfg.segment_samples % cfg.segment_frames != 0) {
-        return fail("segment_samples 必须是 segment_frames 的整数倍");
+        return fail("segment_samples must be a multiple of segment_frames");
     }
     if (cfg.q_channels <= 0) {
-        return fail("q_channels 必须 > 0");
+        return fail("q_channels must be > 0");
     }
     if (cfg.n_fft <= 0 || cfg.win <= 0 || cfg.n_mels <= 0 || cfg.sr <= 0.0) {
-        return fail("mel 配置非法（n_fft/win/n_mels/sr）");
+        return fail("invalid mel config (n_fft/win/n_mels/sr)");
     }
     int64_t prev = 0;
     for (const int64_t b : cfg.buckets) {
         if (b <= 0 || b <= prev) {
-            return fail("buckets 必须为严格升序正整数");
+            return fail("buckets must be strictly increasing positive integers");
         }
         prev = b;
     }
@@ -59,7 +59,7 @@ bool Dataset::open(const std::string& cache_dir, const TrainDataConfig& cfg, Dat
                    std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "Dataset::open: out 为空";
+            *err = "Dataset::open: out is null";
         }
         return false;
     }
@@ -76,25 +76,25 @@ bool Dataset::open(const std::string& cache_dir, const TrainDataConfig& cfg, Dat
     const int64_t hop = cfg.segment_samples / cfg.segment_frames;
     if (meta.spec.hop != hop) {
         if (err != nullptr) {
-            *err = "缓存 spec.hop=" + std::to_string(meta.spec.hop) + " 与配置 hop=" +
-                   std::to_string(hop) + " 不一致";
+            *err = "cached spec.hop=" + std::to_string(meta.spec.hop) + " and config hop=" +
+                   std::to_string(hop) + " differ";
         }
         return false;
     }
     if (meta.spec.n_fft != cfg.n_fft || meta.spec.win != cfg.win) {
         if (err != nullptr) {
-            *err = "缓存 spec.n_fft/win 与配置不一致";
+            *err = "cached spec.n_fft/win does not match the config";
         }
         return false;
     }
     if (meta.target_sr != static_cast<int>(cfg.sr)) {
         if (err != nullptr) {
-            *err = "缓存 target_sr=" + std::to_string(meta.target_sr) + " 与配置 sr=" +
-                   std::to_string(static_cast<int>(cfg.sr)) + " 不一致";
+            *err = "cached target_sr=" + std::to_string(meta.target_sr) + " and config sr=" +
+                   std::to_string(static_cast<int>(cfg.sr)) + " differ";
         }
         return false;
     }
-    // mel 滤波器组（librosa slaney；与 M3-2 golden 同源）
+    // mel filterbank (librosa slaney; same source as the M3-2 golden)
     train::StftMelConfig smcfg;
     smcfg.n_fft = cfg.n_fft;
     smcfg.hop = hop;
@@ -107,7 +107,7 @@ bool Dataset::open(const std::string& cache_dir, const TrainDataConfig& cfg, Dat
     std::string merr;
     if (!smcfg.validate(&merr)) {
         if (err != nullptr) {
-            *err = "mel 配置无效: " + merr;
+            *err = "invalid mel config: " + merr;
         }
         return false;
     }
@@ -160,7 +160,7 @@ int64_t Dataset::bucket_of(int64_t frames) const {
 bool Dataset::assemble(int64_t index, TrainSample* out, std::string* err) const {
     if (out == nullptr || index < 0 || index >= size()) {
         if (err != nullptr) {
-            *err = "assemble: 样本下标越界 " + std::to_string(index);
+            *err = "assemble: sample index out of range " + std::to_string(index);
         }
         return false;
     }
@@ -179,7 +179,7 @@ bool Dataset::assemble(int64_t index, TrainSample* out, std::string* err) const 
     }
     auto fail = [&](const std::string& msg) {
         if (err != nullptr) {
-            *err = "样本 " + s.id + ": " + msg;
+            *err = "sample " + s.id + ": " + msg;
         }
         return false;
     };
@@ -188,21 +188,21 @@ bool Dataset::assemble(int64_t index, TrainSample* out, std::string* err) const 
     const int64_t spec_bins = s.spec_bins;
     const int64_t hop = cfg_.segment_samples / cfg_.segment_frames;
     if (feat_dim <= 0 || spec_bins <= 0) {
-        return fail("feat_dim/spec_bins 非正");
+        return fail("feat_dim/spec_bins non-positive");
     }
-    // 官方 get_labels：repeat(feat,2) → min(·,900)
+    // official get_labels: repeat(feat,2) -> min(·,900)
     const int64_t phone_rows = std::min<int64_t>(2 * s.feat_frames, kMaxPhoneFrames);
     if (s.f0_frames < phone_rows) {
-        return fail("f0_frames=" + std::to_string(s.f0_frames) + " 少于 phone 行数 " +
+        return fail("f0_frames=" + std::to_string(s.f0_frames) + " is less than phone rows " +
                     std::to_string(phone_rows));
     }
-    // 与 spec 对齐取 min（官方 get_audio_text_pair）
+    // min-align with spec (official get_audio_text_pair)
     const int64_t T = std::min(phone_rows, s.spec_frames);
     if (T <= 0) {
-        return fail("对齐后帧数 T<=0");
+        return fail("aligned frame count T<=0");
     }
     if (s.gt_samples < T * hop) {
-        return fail("gt_samples=" + std::to_string(s.gt_samples) + " 少于 T*hop=" +
+        return fail("gt_samples=" + std::to_string(s.gt_samples) + " is less than T*hop=" +
                     std::to_string(T * hop));
     }
 
@@ -237,7 +237,7 @@ bool Dataset::assemble_id(const std::string& id, TrainSample* out, std::string* 
     const int64_t index = index_of(id);
     if (index < 0) {
         if (err != nullptr) {
-            *err = "样本不存在: " + id;
+            *err = "sample not found: " + id;
         }
         return false;
     }
@@ -249,7 +249,7 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
                           std::string* err) const {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "build_batch: out 为空";
+            *err = "build_batch: out is null";
         }
         return false;
     }
@@ -261,11 +261,11 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
     };
     const int64_t B = static_cast<int64_t>(indices.size());
     if (B <= 0) {
-        return fail("批次为空");
+        return fail("batch is empty");
     }
     const int64_t seg = cfg_.segment_frames;
     if (bucket_top < seg) {
-        return fail("bucket_top=" + std::to_string(bucket_top) + " 小于 segment_frames=" +
+        return fail("bucket_top=" + std::to_string(bucket_top) + " is less than segment_frames=" +
                     std::to_string(seg));
     }
     std::vector<TrainSample> samples(static_cast<size_t>(B));
@@ -275,15 +275,15 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
         }
         const TrainSample& s = samples[static_cast<size_t>(b)];
         if (s.frames < seg) {
-            return fail("样本 " + s.id + " 帧数 " + std::to_string(s.frames) +
-                        " 小于 segment_frames（官方 min_text_len 过滤）");
+            return fail("sample " + s.id + " has " + std::to_string(s.frames) +
+                        " frames, less than segment_frames (official min_text_len filter)");
         }
         if (s.frames > bucket_top) {
-            return fail("样本 " + s.id + " 帧数 " + std::to_string(s.frames) +
-                        " 超过桶顶 " + std::to_string(bucket_top));
+            return fail("sample " + s.id + " has " + std::to_string(s.frames) +
+                        " frames, exceeding the bucket top " + std::to_string(bucket_top));
         }
         if (b > 0 && (s.feat_dim != samples[0].feat_dim || s.spec_bins != samples[0].spec_bins)) {
-            return fail("批次内 feat_dim/spec_bins 不一致");
+            return fail("feat_dim/spec_bins inconsistent within the batch");
         }
     }
 
@@ -336,7 +336,7 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
                         &s.spec[static_cast<size_t>(f * Ti)],
                         static_cast<size_t>(Ti) * sizeof(float));
         }
-        // attn_valid = x_mask 外积（与 train_step_selftest 同式）
+        // attn_valid = outer product of x_mask (same form as train_step_selftest)
         for (int64_t tq = 0; tq < Ti; ++tq) {
             for (int64_t tk = 0; tk < Ti; ++tk) {
                 out->attn_valid[static_cast<size_t>(tk + Tb * tq + Tb * Tb * b)] = 1.0f;
@@ -344,16 +344,16 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
         }
     }
 
-    // ---------------- 随机量：ids_slice / q_noise / SineGen 噪声 ----------------
+    // ---------------- random values: ids_slice / q_noise / SineGen noise ----------------
     if (injected != nullptr) {
         if (static_cast<int64_t>(injected->ids_slice.size()) != B) {
-            return fail("注入 ids_slice 尺寸不符");
+            return fail("injected ids_slice size mismatch");
         }
         if (static_cast<int64_t>(injected->q_noise.size()) != Tb * Q * B) {
-            return fail("注入 q_noise 尺寸不符（期望 " + std::to_string(Tb * Q * B) + "）");
+            return fail("injected q_noise size mismatch (expected " + std::to_string(Tb * Q * B) + ")");
         }
         if (static_cast<int64_t>(injected->sine_noise.size()) != L * B) {
-            return fail("注入 sine_noise 尺寸不符");
+            return fail("injected sine_noise size mismatch");
         }
         out->ids_slice = injected->ids_slice;
         out->q_noise = injected->q_noise;
@@ -373,19 +373,19 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
             }
         }
     } else {
-        return fail("未注入随机量且 rng 为空");
+        return fail("no random values injected and rng is null");
     }
     for (int64_t b = 0; b < B; ++b) {
         const int64_t id = out->ids_slice[static_cast<size_t>(b)];
         const int64_t span = samples[static_cast<size_t>(b)].frames - seg + 1;
         if (id < 0 || id > span - 1) {
             return fail("ids_slice[" + std::to_string(b) + "]=" + std::to_string(id) +
-                        " 越界（样本帧数 " + std::to_string(samples[static_cast<size_t>(b)].frames) +
-                        "）");
+                        " out of range (sample frame count " + std::to_string(samples[static_cast<size_t>(b)].frames) +
+                        ")");
         }
     }
 
-    // ---------------- 派生缓冲：slice_mat / pitchf_slice / wave / y_mel / sine ----------------
+    // ---------------- derived buffers: slice_mat / pitchf_slice / wave / y_mel / sine ----------------
     std::vector<float> sine_noise_tmp;
     const float* sine_noise = nullptr;
     if (injected != nullptr) {
@@ -409,7 +409,7 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
         std::memcpy(&out->wave[static_cast<size_t>(L * b)],
                     &s.wav[static_cast<size_t>(id * s.hop)],
                     static_cast<size_t>(L) * sizeof(float));
-        // y_mel = log(clamp(mel_basis · spec[:, id:id+seg], min=log_clip))；双精度累加
+        // y_mel = log(clamp(mel_basis · spec[:, id:id+seg], min=log_clip)); double-precision accumulation
         for (int64_t m = 0; m < seg; ++m) {
             const int64_t col = id + m;
             for (int64_t n = 0; n < cfg_.n_mels; ++n) {
@@ -424,7 +424,7 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
                     static_cast<float>(std::log(clipped));
             }
         }
-        // SineGen（旧 cumsum_shift 法；复用已验证的主机实现）
+        // SineGen (old cumsum_shift method; reuses the verified host implementation)
         std::vector<float> f0s(static_cast<size_t>(seg));
         for (int64_t k = 0; k < seg; ++k) {
             f0s[static_cast<size_t>(k)] = out->pitchf_slice[static_cast<size_t>(k + seg * b)];
@@ -433,7 +433,7 @@ bool Dataset::build_batch(const std::vector<int64_t>& indices, int64_t bucket_to
             f0s.data(), seg, static_cast<int>(cfg_.sr), static_cast<int>(upp),
             sine_noise + static_cast<std::ptrdiff_t>(L * b), L, kSineSeed);
         if (static_cast<int64_t>(sine.size()) != L) {
-            return fail("SineGen 输出长度不符");
+            return fail("SineGen output length mismatch");
         }
         std::memcpy(&out->sine_source_slice[static_cast<size_t>(L * b)], sine.data(),
                     static_cast<size_t>(L) * sizeof(float));

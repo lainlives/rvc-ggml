@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 判别器（MPD）实现（src/model/discriminator.cpp）
+// RVC-Train-GGML - discriminator (MPD) implementation (src/model/discriminator.cpp)
 #include "model/discriminator.h"
 
 #include <cstdio>
@@ -13,12 +13,12 @@ using namespace traincpp;
 Tensor* require_param(const ModelParams& params, const std::string& name, std::string* err) {
     Tensor* t = params.find(name.c_str());
     if (t == nullptr && err != nullptr) {
-        *err = "缺失参数: " + name;
+        *err = "missing parameter: " + name;
     }
     return t;
 }
 
-// 手工装配 Conv1d（含 groups；避免 init helper 改写张量名）
+// Manual Conv1d assembly (with groups; avoid init helpers rewriting tensor names)
 void wire_conv1d(Conv1d* layer, Tensor* v, Tensor* bias, int64_t stride, int64_t padding,
                  int64_t groups, const char* name) {
     layer->weight       = v;
@@ -34,7 +34,7 @@ void wire_conv1d(Conv1d* layer, Tensor* v, Tensor* bias, int64_t stride, int64_t
     std::snprintf(layer->name, MAX_NAME, "%s", name);
 }
 
-// 手工装配 Conv2d（kernel_w/stride_w/padding_w 固定 1/1/0，对齐 DiscriminatorP）
+// Manual Conv2d assembly (kernel_w/stride_w/padding_w fixed at 1/1/0, matching DiscriminatorP)
 void wire_conv2d(Conv2d* layer, Tensor* v, Tensor* bias, int64_t stride_h, int64_t padding_h,
                  const char* name) {
     layer->weight       = v;
@@ -53,14 +53,14 @@ void wire_conv2d(Conv2d* layer, Tensor* v, Tensor* bias, int64_t stride_h, int64
     std::snprintf(layer->name, MAX_NAME, "%s", name);
 }
 
-// DiscriminatorS 固定结构（models.py:1135-1145）：stride/groups 与权重形状正交，按层序固定
+// DiscriminatorS fixed structure (models.py:1135-1145): stride/groups are orthogonal to weight shapes, fixed by layer index
 constexpr int64_t kSStrides[6] = {1, 4, 4, 4, 4, 1};
 constexpr int64_t kSGroups[6]  = {1, 4, 16, 64, 256, 1};
 
-// 折叠 weight_norm：w = g·v/sqrt(Σv²+eps)。
-// conv_post 的输出通道为 1（torch weight_g=[1,1,1]），GGUF 里 v/g 的尾部维被压缩成全 1，
-// train.cpp `weightnorm_forward` 的 n_dims(g)==n_dims(v) 校验不适用 → 这里按**同一公式**
-// （eps=1e-12 在根号内，与库内 kWeightNormEps 一致）把 v 展平成 [rest, oc] 折叠。
+// Fold weight_norm: w = g·v/sqrt(Σv²+eps).
+// conv_post has 1 output channel (torch weight_g=[1,1,1]); in GGUF the trailing dims of v/g are collapsed to all 1s,
+// so the n_dims(g)==n_dims(v) check in train.cpp `weightnorm_forward` does not apply -> here we use **the same formula**
+// (eps=1e-12 inside the sqrt, same as kWeightNormEps in the library) to flatten v to [rest, oc] and fold.
 Tensor* fold_wn_weight(Context* ctx, Tensor* v, Tensor* g, int64_t oc) {
     Tensor* vf  = reshape_2d(ctx, cont(ctx, v), tensor_nelements(v) / oc, oc);
     Tensor* n2  = sum_rows(ctx, mul(ctx, vf, vf));   // [1, oc, 1, 1]
@@ -69,10 +69,10 @@ Tensor* fold_wn_weight(Context* ctx, Tensor* v, Tensor* g, int64_t oc) {
     nn_init_constant(ctx, e, 1e-12f);
     Tensor* den = sqrt_op(ctx, add1(ctx, n2b, e));   // [1, oc]
     Tensor* gf  = reshape_2d(ctx, g, 1, oc);
-    return mul(ctx, div(ctx, vf, den), gf);          // [rest, oc]（可直接 reshape 回层权形状）
+    return mul(ctx, div(ctx, vf, den), gf);          // [rest, oc] (can be reshaped directly back to the layer weight shape)
 }
 
-// 取 weight_g/weight_v（+可选 bias）并装入 WeightNorm POD
+// Fetch weight_g/weight_v (+ optional bias) and put them into a WeightNorm POD
 bool require_wn(const ModelParams& params, const std::string& base, WeightNorm* wn,
                 Tensor** bias, std::string* err) {
     Tensor* g = require_param(params, base + ".weight_g", err);
@@ -106,7 +106,7 @@ DiscForward disc_forward_s(Context* ctx, const DiscSModule& m, Tensor* x) {
                             m.conv_post.out_channels);
     y = conv1d_forward_weight(ctx, &m.conv_post, w, y);
     f.fmap.push_back(y);
-    // flatten(1,-1)：conv_post 输出通道 = 1 → [N,B] 无行序歧义
+    // flatten(1,-1): conv_post output channels = 1 -> no row-order ambiguity in [N,B]
     const int64_t B = y->ne[2];
     f.out = reshape_2d(ctx, cont(ctx, y), tensor_nelements(y) / B, B);
     return f;
@@ -118,7 +118,7 @@ DiscForward disc_forward_p(Context* ctx, const DiscPModule& m, Tensor* x) {
     const int64_t T = x->ne[0];
     const int64_t B = x->ne[2];
 
-    // period 折叠：不足整周期时 reflect 右填充（torch `F.pad(x,(0,n_pad),"reflect")`）
+    // period folding: reflect right padding when shorter than a full period (torch `F.pad(x,(0,n_pad),"reflect")`)
     int64_t t2 = T;
     Tensor* xt = x;
     const int64_t rem = T % m.period;
@@ -152,13 +152,13 @@ DiscForward disc_forward_p(Context* ctx, const DiscPModule& m, Tensor* x) {
 bool mpd_load(const ModelParams& params, const MpdConfig& cfg, MpdModule* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "MPD 输出为空";
+            *err = "MPD output is null";
         }
         return false;
     }
     if (cfg.periods.empty()) {
         if (err != nullptr) {
-            *err = "MPD 配置非法（periods 为空）";
+            *err = "invalid MPD config (periods is empty)";
         }
         return false;
     }
@@ -166,7 +166,7 @@ bool mpd_load(const ModelParams& params, const MpdConfig& cfg, MpdModule* out, s
     MpdModule m;
     m.cfg = cfg;
 
-    // DiscriminatorS（discriminators.0）
+    // DiscriminatorS (discriminators.0)
     for (int i = 0; i < 6; ++i) {
         const std::string base = cfg.prefix + ".0.convs." + std::to_string(i);
         Tensor* bias = nullptr;
@@ -176,7 +176,7 @@ bool mpd_load(const ModelParams& params, const MpdConfig& cfg, MpdModule* out, s
         Tensor* v = m.s.conv_wn[i].v;
         if (v->ne[2] % kSGroups[i] != 0) {
             if (err != nullptr) {
-                *err = "DiscriminatorS 第 " + std::to_string(i) + " 层输出通道不能被 groups 整除";
+                *err = "DiscriminatorS layer " + std::to_string(i) + " output channels are not divisible by groups";
             }
             return false;
         }
@@ -193,7 +193,7 @@ bool mpd_load(const ModelParams& params, const MpdConfig& cfg, MpdModule* out, s
         wire_conv1d(&m.s.conv_post, v, bias, 1, v->ne[0] / 2, 1, "mpd.s.conv_post");
     }
 
-    // DiscriminatorP（discriminators.1..n，与 cfg.periods 顺序一致）
+    // DiscriminatorP (discriminators.1..n, in the same order as cfg.periods)
     m.ps.resize(cfg.periods.size());
     for (size_t d = 0; d < cfg.periods.size(); ++d) {
         DiscPModule& p = m.ps[d];
@@ -208,12 +208,12 @@ bool mpd_load(const ModelParams& params, const MpdConfig& cfg, MpdModule* out, s
             Tensor* v = p.conv_wn[i].v;
             if (v->ne[0] != 1 || v->ne[1] != cfg.kernel_size) {
                 if (err != nullptr) {
-                    *err = "DiscriminatorP 卷积核形状不符（期望 [1," + std::to_string(cfg.kernel_size) +
-                           "]）: " + base + ".weight_v";
+                    *err = "DiscriminatorP convolution kernel shape mismatch (expected [1," + std::to_string(cfg.kernel_size) +
+                           "]): " + base + ".weight_v";
                 }
                 return false;
             }
-            // 前 4 层 stride=3、第 5 层 stride=1（models.py:1205-1213）
+            // first 4 layers stride=3, 5th layer stride=1 (models.py:1205-1213)
             const int64_t stride_h = (i < 4) ? cfg.stride : 1;
             wire_conv2d(&p.convs[i], v, bias, stride_h, v->ne[1] / 2, "mpd.p.convs");
         }
@@ -235,19 +235,19 @@ bool mpd_load(const ModelParams& params, const MpdConfig& cfg, MpdModule* out, s
 MpdForward mpd_forward(Context* ctx, const MpdModule& m, Tensor* wave, Tensor* wave_hat) {
     MpdForward out;
     if (ctx == nullptr || wave == nullptr || wave_hat == nullptr) {
-        std::printf("[mpd] 输入为空\n");
+        std::printf("[mpd] null input\n");
         return out;
     }
     if (wave->ne[0] != wave_hat->ne[0] || wave->ne[2] != wave_hat->ne[2] ||
         wave->ne[1] != 1 || wave_hat->ne[1] != 1) {
-        std::printf("[mpd] 输入形状不符: wave ne=[%lld,%lld,%lld] wave_hat ne=[%lld,%lld,%lld]\n",
+        std::printf("[mpd] input shape mismatch: wave ne=[%lld,%lld,%lld] wave_hat ne=[%lld,%lld,%lld]\n",
                     (long long) wave->ne[0], (long long) wave->ne[1], (long long) wave->ne[2],
                     (long long) wave_hat->ne[0], (long long) wave_hat->ne[1],
                     (long long) wave_hat->ne[2]);
         return out;
     }
     if (wave->ne[1] != m.s.convs[0].in_channels) {
-        std::printf("[mpd] 波形通道 %lld != DiscriminatorS in_channels %lld\n",
+        std::printf("[mpd] waveform channels %lld != DiscriminatorS in_channels %lld\n",
                     (long long) wave->ne[1], (long long) m.s.convs[0].in_channels);
         return out;
     }

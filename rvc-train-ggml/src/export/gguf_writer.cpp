@@ -1,4 +1,4 @@
-// gguf_writer.cpp —— M4-5a 实现（薄封装 ggml gguf_* API；见头注释）
+// gguf_writer.cpp -- M4-5a implementation (thin wrapper over the ggml gguf_* API; see the header comment)
 
 #include "export/gguf_writer.h"
 
@@ -11,7 +11,7 @@ namespace {
 bool check_name(const std::string& name, std::string* err) {
     if (name.empty() || name.size() >= GGML_MAX_NAME) {
         if (err) {
-            *err = "GGUF 张量名非法（空或 ≥ GGML_MAX_NAME）: " + name;
+            *err = "invalid GGUF tensor name (empty or >= GGML_MAX_NAME): " + name;
         }
         return false;
     }
@@ -23,13 +23,13 @@ bool check_name(const std::string& name, std::string* err) {
 struct GgufWriter::Impl {
     ggml_context* tensor_ctx = nullptr;
     gguf_context* gguf = nullptr;
-    std::vector<ggml_tensor*> tensors;  // 仅元数据（no_alloc），数据指针由调用方持有
+    std::vector<ggml_tensor*> tensors;  // metadata only (no_alloc); data pointers are owned by the caller
 };
 
 GgufWriter::GgufWriter() : impl_(new Impl()) {
     impl_->gguf = gguf_init_empty();
     ggml_init_params p{};
-    p.mem_size = 16 * 1024;  // 4 个张量元数据足够
+    p.mem_size = 16 * 1024;  // enough for 4 tensor metadata entries
     p.mem_buffer = nullptr;
     p.no_alloc = true;
     impl_->tensor_ctx = ggml_init(p);
@@ -82,7 +82,7 @@ bool GgufWriter::add_f32_1d(const std::string& name, const float* data, int64_t 
 bool GgufWriter::write(const std::string& path, std::string* err) {
     if (!gguf_write_to_file(impl_->gguf, path.c_str(), false)) {
         if (err) {
-            *err = "gguf_write_to_file 失败: " + path;
+            *err = "gguf_write_to_file failed: " + path;
         }
         return false;
     }

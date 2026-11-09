@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 前向对拍 harness 实现（src/model/selftest.cpp）
+// RVC-Train-GGML - forward comparison harness implementation (src/model/selftest.cpp)
 #include "model/selftest.h"
 
 #include "model/dec.h"
@@ -41,7 +41,7 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法打开文件: " + path;
+            *err = "failed to open file: " + path;
         }
         return false;
     }
@@ -66,7 +66,7 @@ struct CompareStat {
     double max_abs = 0.0;
     double max_ref = 0.0;
     double rel = 0.0;
-    double rms_rel = 0.0;  // RMS(差值) / RMS(参考)，对单元素抵消噪声更稳健
+    double rms_rel = 0.0;  // RMS(diff) / RMS(ref), more robust against single-element cancellation noise
     int64_t mismatch = 0;
 };
 
@@ -104,7 +104,7 @@ bool create_inputs(Context* ctx, const GoldenManifest& gm, std::map<std::string,
         Tensor* it = new_tensor_nd(ctx, type, gt.nd, gt.ne.data());
         if (it == nullptr) {
             if (err != nullptr) {
-                *err = "创建输入张量失败: " + gt.name;
+                *err = "failed to create input tensor: " + gt.name;
             }
             return false;
         }
@@ -123,7 +123,7 @@ bool set_inputs(const GoldenManifest& gm, const std::map<std::string, Tensor*>& 
         auto it = inputs.find(gt.name);
         if (it == inputs.end() || it->second == nullptr) {
             if (err != nullptr) {
-                *err = "输入张量未创建: " + gt.name;
+                *err = "input tensor was not created: " + gt.name;
             }
             return false;
         }
@@ -135,7 +135,7 @@ bool set_inputs(const GoldenManifest& gm, const std::map<std::string, Tensor*>& 
         const size_t expect = (size_t) tensor_nelements(t) * tensor_element_size(t);
         if (bytes.size() != expect) {
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "输入文件大小不符: %s（%zu != %zu）", gt.file.c_str(),
+            std::snprintf(buf, sizeof(buf), "input file size mismatch: %s (%zu != %zu)", gt.file.c_str(),
                           bytes.size(), expect);
             if (err != nullptr) {
                 *err = buf;
@@ -166,11 +166,11 @@ bool compare_outputs(const GoldenManifest& gm,
         if (t == nullptr) {
             if (gt.role == "output") {
                 if (err != nullptr) {
-                    *err = "C++ 未提供输出张量: " + gt.name;
+                    *err = "C++ did not provide output tensor: " + gt.name;
                 }
                 return false;
             }
-            std::printf("[selftest-forward]   [warn] golden 中间量 %s 未提供，跳过\n",
+            std::printf("[selftest-forward]   [warn] golden intermediate %s not provided, skipping\n",
                         gt.name.c_str());
             continue;
         }
@@ -190,7 +190,7 @@ bool compare_outputs(const GoldenManifest& gm,
         }
         if (ref.size() != nbytes) {
             char buf[256];
-            std::snprintf(buf, sizeof(buf), "参考文件大小不符: %s（%zu != %zu）", gt.file.c_str(),
+            std::snprintf(buf, sizeof(buf), "reference file size mismatch: %s (%zu != %zu)", gt.file.c_str(),
                           ref.size(), nbytes);
             if (err != nullptr) {
                 *err = buf;
@@ -208,7 +208,7 @@ bool compare_outputs(const GoldenManifest& gm,
             std::memcpy(rv.data(), ref.data(), nbytes);
             compare_i32(rv.data(), gv.data(), n, &st);
             ok = ok && (st.mismatch == 0);
-            std::printf("[selftest-forward]   %-8s ne=%-16s %s（mismatch=%lld）\n", gt.name.c_str(),
+            std::printf("[selftest-forward]   %-8s ne=%-16s %s (mismatch=%lld)\n", gt.name.c_str(),
                         ne_string(gt).c_str(), ok ? "OK" : "FAIL", (long long) st.mismatch);
         } else {
             std::vector<float> gv((size_t) n);
@@ -255,7 +255,7 @@ const Entry* find_entry(const std::string& module) {
     return nullptr;
 }
 
-// 调试开关 RVCT_DEBUG_ALLOC=1：打印上下文张量分配总量与 Top-15（定位超限/巨型张量）
+// Debug switch RVCT_DEBUG_ALLOC=1: print the total context tensor allocation and Top-15 (to locate over-limit/huge tensors)
 void debug_print_alloc(const Context* ctx) {
     char*  dbg_env = nullptr;
     size_t dbg_len = 0;
@@ -280,7 +280,7 @@ void debug_print_alloc(const Context* ctx) {
     std::sort(big.begin(), big.end(),
               [](const std::pair<size_t, std::string>& a,
                  const std::pair<size_t, std::string>& b) { return a.first > b.first; });
-    std::printf("[debug-alloc] tensors=%d 待分配总量=%.1f MiB（%zu 字节）\n", nt,
+    std::printf("[debug-alloc] tensors=%d pending allocation=%.1f MiB (%zu bytes)\n", nt,
                 (double) total / (1024.0 * 1024.0), total);
     for (size_t i = 0; i < big.size() && i < 15; ++i) {
         const std::string& nm = big[i].second;
@@ -288,11 +288,11 @@ void debug_print_alloc(const Context* ctx) {
             std::printf("[debug-alloc]   %-38s %.2f MiB\n", nm.c_str(),
                         (double) big[i].first / (1024.0 * 1024.0));
         } else {
-            std::printf("[debug-alloc]   （未命名）%.2f MiB\n",
+            std::printf("[debug-alloc]   (anonymous) %.2f MiB\n",
                         (double) big[i].first / (1024.0 * 1024.0));
         }
     }
-    // 未命名张量中按形状统计最大的几个（帮助定位广播/中间量）
+    // Largest unnamed tensors by shape (helps locate broadcast/intermediate tensors)
     std::vector<std::pair<size_t, std::string>> big_anon;
     for (int i = 0; i < nt; ++i) {
         Tensor* t = context_tensor(ctx, i);
@@ -311,22 +311,22 @@ void debug_print_alloc(const Context* ctx) {
               [](const std::pair<size_t, std::string>& a,
                  const std::pair<size_t, std::string>& b) { return a.first > b.first; });
     for (size_t i = 0; i < big_anon.size() && i < 10; ++i) {
-        std::printf("[debug-alloc]   匿名 ne=%-24s %.2f MiB\n", big_anon[i].second.c_str(),
+        std::printf("[debug-alloc]   anonymous ne=%-24s %.2f MiB\n", big_anon[i].second.c_str(),
                     (double) big_anon[i].first / (1024.0 * 1024.0));
     }
-    std::printf("[debug-alloc]   匿名张量（≥8MiB）数量=%zu\n", big_anon.size());
+    std::printf("[debug-alloc]   anonymous tensors (>=8MiB) count=%zu\n", big_anon.size());
 }
 
 int run_single(const std::string& weights_path, const std::string& golden_dir,
                const std::string& module, Device* dev) {
     const Entry* entry = find_entry(module);
     if (entry == nullptr) {
-        std::printf("[selftest-forward] 未知模块: %s（可用 emb_g/wn/resblock1/dec/flow/enc_p/enc_q/disc/synth/all）\n",
+        std::printf("[selftest-forward] unknown module: %s (available: emb_g/wn/resblock1/dec/flow/enc_p/enc_q/disc/synth/all)\n",
                     module.c_str());
         return 2;
     }
     if (dev == nullptr) {
-        std::printf("[selftest-forward] 无可用设备\n");
+        std::printf("[selftest-forward] no available device\n");
         return 2;
     }
 
@@ -335,14 +335,14 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     std::string err;
     TrainWeights* w = TrainWeights::open(weights_path, &err);
     if (w == nullptr) {
-        std::printf("[selftest-forward] 打开失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] open failed: %s\n", err.c_str());
         return 1;
     }
     TrainMeta meta;
     w->read_meta(&meta);
     const ModelConfig cfg = ModelConfig::from_meta(meta);
     if (!cfg.validate(&err)) {
-        std::printf("[selftest-forward] 配置校验失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] config validation failed: %s\n", err.c_str());
         delete w;
         return 1;
     }
@@ -357,14 +357,14 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     const int64_t n = w->tensor_count();
     Context* ctx = context_new((size_t) (n + 2048) * 1024 + (1u << 20));
     if (ctx == nullptr) {
-        std::printf("[selftest-forward] context_new 失败\n");
+        std::printf("[selftest-forward] context_new failed\n");
         delete w;
         return 1;
     }
 
     ModelParams params;
     if (!params.build_all(ctx, *w, &err)) {
-        std::printf("[selftest-forward] 建参失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] parameter build failed: %s\n", err.c_str());
         context_free(ctx);
         delete w;
         return 1;
@@ -382,13 +382,13 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
         return 1;
     }
     if (!entry->build(io, &err)) {
-        std::printf("[selftest-forward] 建图失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] graph build failed: %s\n", err.c_str());
         context_free(ctx);
         delete w;
         return 1;
     }
 
-    std::printf("[selftest-forward] 输入: ");
+    std::printf("[selftest-forward] inputs: ");
     for (const auto& kv : io.inputs) {
         std::printf("%s ne=[%lld,%lld,%lld]  ", kv.first.c_str(), (long long) kv.second->ne[0],
                     (long long) kv.second->ne[1], (long long) kv.second->ne[2]);
@@ -397,7 +397,7 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
 
     Graph* graph = graph_new(ctx);
     if (graph == nullptr) {
-        std::printf("[selftest-forward] graph_new 失败\n");
+        std::printf("[selftest-forward] graph_new failed\n");
         context_free(ctx);
         delete w;
         return 1;
@@ -407,13 +407,13 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     }
 
     const DeviceProps& dp = dev->props();
-    std::printf("[selftest-forward] backend = %s（%s）\n", dp.name.c_str(),
+    std::printf("[selftest-forward] backend = %s (%s)\n", dp.name.c_str(),
                 dp.type == DeviceType::CPU ? "CPU" : "GPU");
 
     debug_print_alloc(ctx);
     Buffer* buf = buffer_alloc_ctx_tensors(ctx, dev->default_buffer_type());
     if (buf == nullptr) {
-        std::printf("[selftest-forward] 计算缓冲分配失败\n");
+        std::printf("[selftest-forward] compute buffer allocation failed\n");
         graph_free(graph);
         context_free(ctx);
         delete w;
@@ -423,7 +423,7 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     int64_t loaded = 0;
     for (Tensor* t : params.params().items) {
         if (!w->load(t, t->name, &err)) {
-            std::printf("[selftest-forward] 装载失败: %s\n", err.c_str());
+            std::printf("[selftest-forward] load failed: %s\n", err.c_str());
             buffer_free(buf);
             graph_free(graph);
             context_free(ctx);
@@ -432,7 +432,7 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
         }
         ++loaded;
     }
-    std::printf("[selftest-forward] 参数装载: %lld/%lld\n", (long long) loaded, (long long) n);
+    std::printf("[selftest-forward] parameters loaded: %lld/%lld\n", (long long) loaded, (long long) n);
 
     if (!set_inputs(gm, io.inputs, &err)) {
         std::printf("[selftest-forward] %s\n", err.c_str());
@@ -444,7 +444,7 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     }
 
     if (io.prepare && !io.prepare(&err)) {
-        std::printf("[selftest-forward] 准备失败: %s\n", err.c_str());
+        std::printf("[selftest-forward] prepare failed: %s\n", err.c_str());
         buffer_free(buf);
         graph_free(graph);
         context_free(ctx);
@@ -454,7 +454,7 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
 
     const Tensor* unsupported = graph_first_unsupported(graph, dev);
     if (unsupported != nullptr) {
-        std::printf("[selftest-forward] 设备不支持节点: %s\n", unsupported->name);
+        std::printf("[selftest-forward] device does not support node: %s\n", unsupported->name);
         buffer_free(buf);
         graph_free(graph);
         context_free(ctx);
@@ -463,7 +463,7 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     }
 
     if (!dev->graph_compute(graph)) {
-        std::printf("[selftest-forward] graph_compute 失败\n");
+        std::printf("[selftest-forward] graph_compute failed\n");
         buffer_free(buf);
         graph_free(graph);
         context_free(ctx);
@@ -483,8 +483,8 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     }
 
     const bool ok = (failed == 0 && checked > 0);
-    std::printf("[selftest-forward] 对拍 %s（%d/%d 张量，F32 rel ≤ %.0e）\n",
-                ok ? "通过" : "失败", checked - failed, checked, kRelTol);
+    std::printf("[selftest-forward] comparison %s (%d/%d tensors, F32 rel ≤ %.0e)\n",
+                ok ? "PASS" : "FAIL", checked - failed, checked, kRelTol);
 
     buffer_free(buf);
     graph_free(graph);
@@ -493,14 +493,14 @@ int run_single(const std::string& weights_path, const std::string& golden_dir,
     return ok ? 0 : 1;
 }
 
-// ---------------------------------------------------------------- M3-1 反向对拍
+// ---------------------------------------------------------------- M3-1 backward comparison
 
-constexpr double kBackTol      = 1e-3;   // 梯度对拍 max 门（短序列模块；M3 验收门）
-constexpr double kBackTolLong  = 2e-2;   // dec/synth（L=19200）跨实现 F32 累加噪声见 Q17
-constexpr double kBackRmsTol   = 2e-3;   // 梯度对拍 RMS 门（所有模块；抗单元素抵消噪声）
-constexpr double kLossTol      = 1e-4;   // VJP 标量 loss 门（同前向）
-constexpr float  kGradcheckEps = 1e-2f;  // 中心差分步长（F32）
-constexpr double kGradcheckTol = 2e-2;   // 数值 gradcheck 相对门
+constexpr double kBackTol      = 1e-3;   // gradient comparison max gate (short-sequence modules; M3 acceptance gate)
+constexpr double kBackTolLong  = 2e-2;   // dec/synth (L=19200) cross-implementation F32 accumulation noise, see Q17
+constexpr double kBackRmsTol   = 2e-3;   // gradient comparison RMS gate (all modules; robust against single-element cancellation noise)
+constexpr double kLossTol      = 1e-4;   // VJP scalar loss gate (same as forward)
+constexpr float  kGradcheckEps = 1e-2f;  // central-difference step (F32)
+constexpr double kGradcheckTol = 2e-2;   // numerical gradcheck relative gate
 
 Tensor* find_compare_tensor(const std::vector<std::pair<std::string, Tensor*>>& compares,
                             const std::string& name) {
@@ -530,7 +530,7 @@ bool fill_tensor_from_file(Tensor* t, const std::string& dir, const GoldenTensor
     const size_t expect = (size_t) tensor_nelements(t) * tensor_element_size(t);
     if (bytes.size() != expect) {
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "文件大小不符: %s（%zu != %zu）", gt.file.c_str(),
+        std::snprintf(buf, sizeof(buf), "file size mismatch: %s (%zu != %zu)", gt.file.c_str(),
                       bytes.size(), expect);
         if (err != nullptr) {
             *err = buf;
@@ -551,8 +551,8 @@ void tensor_set_f32_at(Tensor* t, int64_t idx, float v) {
     tensor_set(t, &v, (size_t) idx * sizeof(float), sizeof(float));
 }
 
-// 与 golden <module>.<name>.grad.f32.raw 逐项比较（rel = max_abs / max(1, max|ref|)；
-// 另看 rms_rel 抗单元素抵消噪声；dec/synth 因 L=19200 的跨实现 F32 累加噪声用宽容门，见 Q17）
+// Item-by-item comparison with golden <module>.<name>.grad.f32.raw (rel = max_abs / max(1, max|ref|);
+// rms_rel is also checked against single-element cancellation noise; dec/synth use a relaxed gate due to cross-implementation F32 accumulation noise at L=19200, see Q17)
 void compare_grads(const GoldenManifest& gm, const SelftestBuildIO& io,
                    const ModelParams& params, bool long_seq, int* checked, int* failed) {
     *checked = 0;
@@ -571,18 +571,18 @@ void compare_grads(const GoldenManifest& gm, const SelftestBuildIO& io,
             target = params.find(gt.name.c_str());
         }
         if (target == nullptr) {
-            std::printf("[selftest-backward]   %-46s [FAIL] 找不到梯度目标\n", gt.name.c_str());
+            std::printf("[selftest-backward]   %-46s [FAIL] gradient target not found\n", gt.name.c_str());
             ++(*failed);
             continue;
         }
         if (!tensor_matches_ne(target, gt)) {
-            std::printf("[selftest-backward]   %-46s [FAIL] 目标形状不符\n", gt.name.c_str());
+            std::printf("[selftest-backward]   %-46s [FAIL] target shape mismatch\n", gt.name.c_str());
             ++(*failed);
             continue;
         }
         Tensor* grad = target->grad_acc;
         if (grad == nullptr) {
-            std::printf("[selftest-backward]   %-46s [FAIL] grad_acc=null（未参与反向）\n",
+            std::printf("[selftest-backward]   %-46s [FAIL] grad_acc=null (not part of backward)\n",
                         gt.name.c_str());
             ++(*failed);
             continue;
@@ -593,7 +593,7 @@ void compare_grads(const GoldenManifest& gm, const SelftestBuildIO& io,
         std::vector<uint8_t> ref;
         std::string err;
         if (!read_file_bytes(join_path(gm.dir, gt.file), &ref, &err) || ref.size() != nbytes) {
-            std::printf("[selftest-backward]   %-46s [FAIL] 参考文件读取失败: %s\n", gt.name.c_str(),
+            std::printf("[selftest-backward]   %-46s [FAIL] failed to read reference file: %s\n", gt.name.c_str(),
                         err.c_str());
             ++(*failed);
             continue;
@@ -601,7 +601,7 @@ void compare_grads(const GoldenManifest& gm, const SelftestBuildIO& io,
         CompareStat st;
         const int64_t ne = (int64_t) (nbytes / sizeof(float));
         compare_f32((const float*) ref.data(), (const float*) got.data(), ne, &st);
-        // 参考张量近似为零时（max_abs 本身极小）rms_rel 会失真 → 绝对值兜底
+        // When the reference tensor is near zero (max_abs itself tiny), rms_rel is distorted -> fall back to the absolute value
         const bool ok = (st.rel <= max_tol) &&
                         (st.rms_rel <= kBackRmsTol || st.max_abs <= 1e-5);
         std::printf("[selftest-backward]   %-46s ne=%-18s max_abs=%.3e rel=%.3e rms=%.3e %s\n",
@@ -628,12 +628,12 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
                         const std::string& dump_grads, Device* dev) {
     const Entry* entry = find_entry(module);
     if (entry == nullptr) {
-        std::printf("[selftest-backward] 未知模块: %s（可用 emb_g/wn/resblock1/dec/flow/enc_p/enc_q/disc/synth/all）\n",
+        std::printf("[selftest-backward] unknown module: %s (available: emb_g/wn/resblock1/dec/flow/enc_p/enc_q/disc/synth/all)\n",
                     module.c_str());
         return 2;
     }
     if (dev == nullptr) {
-        std::printf("[selftest-backward] 无可用设备\n");
+        std::printf("[selftest-backward] no available device\n");
         return 2;
     }
     std::printf("[selftest-backward] module=%s golden=%s\n", module.c_str(), golden_dir.c_str());
@@ -641,14 +641,14 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     std::string err;
     TrainWeights* w = TrainWeights::open(weights_path, &err);
     if (w == nullptr) {
-        std::printf("[selftest-backward] 打开失败: %s\n", err.c_str());
+        std::printf("[selftest-backward] open failed: %s\n", err.c_str());
         return 1;
     }
     TrainMeta meta;
     w->read_meta(&meta);
     const ModelConfig cfg = ModelConfig::from_meta(meta);
     if (!cfg.validate(&err)) {
-        std::printf("[selftest-backward] 配置校验失败: %s\n", err.c_str());
+        std::printf("[selftest-backward] config validation failed: %s\n", err.c_str());
         delete w;
         return 1;
     }
@@ -662,18 +662,18 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     const int64_t n = w->tensor_count();
     Context* ctx = context_new((size_t) (n + 4096) * 1024 + (1u << 20));
     if (ctx == nullptr) {
-        std::printf("[selftest-backward] context_new 失败\n");
+        std::printf("[selftest-backward] context_new failed\n");
         delete w;
         return 1;
     }
     ModelParams params;
     if (!params.build_all(ctx, *w, &err)) {
-        std::printf("[selftest-backward] 建参失败: %s\n", err.c_str());
+        std::printf("[selftest-backward] parameter build failed: %s\n", err.c_str());
         context_free(ctx);
         delete w;
         return 1;
     }
-    // 反向对拍需要显式标记可训练参数（冻结用 tensor_clear_param；只影响下一次反向展开）
+    // Backward comparison requires explicitly marking trainable parameters (tensor_clear_param freezes them; only affects the next backward expansion)
     for (Tensor* t : params.params().items) {
         tensor_set_param(t);
     }
@@ -688,20 +688,20 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
         delete w;
         return 1;
     }
-    // 浮点输入叶子也要参与反向（标记 PARAM 后才会分配 grad_acc；与权重同口径对比）
+    // F32 input leaves must also participate in backward (grad_acc is only allocated after marking PARAM; compared with the same convention as weights)
     for (auto& kv : io.inputs) {
         if (kv.second != nullptr && kv.second->type == TYPE_F32) {
             tensor_set_param(kv.second);
         }
     }
     if (!entry->build(io, &err)) {
-        std::printf("[selftest-backward] 建图失败: %s\n", err.c_str());
+        std::printf("[selftest-backward] graph build failed: %s\n", err.c_str());
         context_free(ctx);
         delete w;
         return 1;
     }
 
-    std::printf("[selftest-backward] 输入: ");
+    std::printf("[selftest-backward] inputs: ");
     for (const auto& kv : io.inputs) {
         std::printf("%s ne=[%lld,%lld,%lld]  ", kv.first.c_str(), (long long) kv.second->ne[0],
                     (long long) kv.second->ne[1], (long long) kv.second->ne[2]);
@@ -710,7 +710,7 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
 
     Graph* graph = graph_new(ctx);
     if (graph == nullptr) {
-        std::printf("[selftest-backward] graph_new 失败\n");
+        std::printf("[selftest-backward] graph_new failed\n");
         context_free(ctx);
         delete w;
         return 1;
@@ -725,7 +725,7 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
         delete w;
     };
 
-    // cotangent 叶子 + 标量 VJP loss（loss = Σ_out Σ(out ⊙ cot)）
+    // cotangent leaves + scalar VJP loss (loss = Σ_out Σ(out ⊙ cot))
     std::vector<std::pair<const GoldenTensor*, Tensor*>> cots;
     Tensor* acc = nullptr;
     for (const GoldenTensor& gt : gm.tensors) {
@@ -734,45 +734,45 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
         }
         Tensor* out_t = find_compare_tensor(io.compares, gt.name);
         if (out_t == nullptr) {
-            std::printf("[selftest-backward] C++ 未提供 cotangent 目标张量: %s\n", gt.name.c_str());
+            std::printf("[selftest-backward] C++ did not provide cotangent target tensor: %s\n", gt.name.c_str());
             cleanup();
             return 1;
         }
         if (!tensor_matches_ne(out_t, gt)) {
-            std::printf("[selftest-backward] cotangent 目标形状不符: %s\n", gt.name.c_str());
+            std::printf("[selftest-backward] cotangent target shape mismatch: %s\n", gt.name.c_str());
             cleanup();
             return 1;
         }
         Tensor* cot = new_tensor_nd(ctx, TYPE_F32, gt.nd, gt.ne.data());
         if (cot == nullptr) {
-            std::printf("[selftest-backward] cotangent 叶子创建失败: %s\n", gt.name.c_str());
+            std::printf("[selftest-backward] cotangent leaf creation failed: %s\n", gt.name.c_str());
             cleanup();
             return 1;
         }
         std::snprintf(cot->name, MAX_NAME, "cot:%s", gt.name.c_str());
         Tensor* term = mul(ctx, out_t, cot);
         if (term == nullptr) {
-            std::printf("[selftest-backward] mul 建图失败: %s\n", gt.name.c_str());
+            std::printf("[selftest-backward] mul graph build failed: %s\n", gt.name.c_str());
             cleanup();
             return 1;
         }
-        // 每个输出先归约为标量再累加（输出形状/元素数可不同）
+        // Each output is reduced to a scalar first, then accumulated (output shapes/element counts may differ)
         term = sum(ctx, term);
         if (term == nullptr) {
-            std::printf("[selftest-backward] sum 建图失败: %s\n", gt.name.c_str());
+            std::printf("[selftest-backward] sum graph build failed: %s\n", gt.name.c_str());
             cleanup();
             return 1;
         }
         acc = (acc == nullptr) ? term : add(ctx, acc, term);
         if (acc == nullptr) {
-            std::printf("[selftest-backward] add 建图失败: %s\n", gt.name.c_str());
+            std::printf("[selftest-backward] add graph build failed: %s\n", gt.name.c_str());
             cleanup();
             return 1;
         }
         cots.emplace_back(&gt, cot);
     }
     if (cots.empty()) {
-        std::printf("[selftest-backward] manifest 无 cotangent 条目\n");
+        std::printf("[selftest-backward] manifest has no cotangent entries\n");
         cleanup();
         return 1;
     }
@@ -780,17 +780,17 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     std::snprintf(loss->name, MAX_NAME, "vjp_loss");
     tensor_set_loss(loss);
 
-    // 前向 + 反向展开（必须在 buffer 分配之前）
+    // Forward + backward expansion (must happen before buffer allocation)
     graph_build_forward_expand(ctx, graph, loss);
     graph_build_backward_expand(graph);
 
     const DeviceProps& dp = dev->props();
-    std::printf("[selftest-backward] backend = %s（%s）\n", dp.name.c_str(),
+    std::printf("[selftest-backward] backend = %s (%s)\n", dp.name.c_str(),
                 dp.type == DeviceType::CPU ? "CPU" : "GPU");
     debug_print_alloc(ctx);
 
-    // 大图（如 disc L=12800）全量 ctx 分配会超 Vulkan 4GiB 单缓冲；RVCT_BWD_GRAPH_ALLOC=1
-    // 可切换到图级 liveness 分配（默认关闭，保持既有反向对拍行为不变）。
+    // Full ctx allocation for a large graph (e.g. disc L=12800) exceeds the Vulkan 4GiB single buffer; RVCT_BWD_GRAPH_ALLOC=1
+    // switches to graph-level liveness allocation (off by default, keeping the existing backward comparison behavior unchanged).
     bool graph_alloc = false;
     {
         char*  env = nullptr;
@@ -804,7 +804,7 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     buf = graph_alloc ? buffer_alloc_graph_tensors(graph, dev->default_buffer_type())
                       : buffer_alloc_ctx_tensors(ctx, dev->default_buffer_type());
     if (buf == nullptr) {
-        std::printf("[selftest-backward] 计算缓冲分配失败（可用 RVCT_DEBUG_ALLOC=1 查看待分配总量）\n");
+        std::printf("[selftest-backward] compute buffer allocation failed (use RVCT_DEBUG_ALLOC=1 to inspect the pending allocation total)\n");
         cleanup();
         return 1;
     }
@@ -812,13 +812,13 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     int64_t loaded = 0;
     for (Tensor* t : params.params().items) {
         if (!w->load(t, t->name, &err)) {
-            std::printf("[selftest-backward] 装载失败: %s\n", err.c_str());
+            std::printf("[selftest-backward] load failed: %s\n", err.c_str());
             cleanup();
             return 1;
         }
         ++loaded;
     }
-    std::printf("[selftest-backward] 参数装载: %lld/%lld\n", (long long) loaded, (long long) n);
+    std::printf("[selftest-backward] parameters loaded: %lld/%lld\n", (long long) loaded, (long long) n);
 
     if (!set_inputs(gm, io.inputs, &err)) {
         std::printf("[selftest-backward] %s\n", err.c_str());
@@ -827,31 +827,31 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     }
     for (const auto& c : cots) {
         if (!fill_tensor_from_file(c.second, gm.dir, *c.first, &err)) {
-            std::printf("[selftest-backward] cotangent 注入失败: %s\n", err.c_str());
+            std::printf("[selftest-backward] cotangent injection failed: %s\n", err.c_str());
             cleanup();
             return 1;
         }
     }
     if (io.prepare && !io.prepare(&err)) {
-        std::printf("[selftest-backward] 准备失败: %s\n", err.c_str());
+        std::printf("[selftest-backward] prepare failed: %s\n", err.c_str());
         cleanup();
         return 1;
     }
 
     const Tensor* unsupported = graph_first_unsupported(graph, dev);
     if (unsupported != nullptr) {
-        std::printf("[selftest-backward] 设备不支持节点: %s\n", unsupported->name);
+        std::printf("[selftest-backward] device does not support node: %s\n", unsupported->name);
         cleanup();
         return 1;
     }
     graph_reset(graph);
     if (!dev->graph_compute(graph)) {
-        std::printf("[selftest-backward] graph_compute 失败\n");
+        std::printf("[selftest-backward] graph_compute failed\n");
         cleanup();
         return 1;
     }
 
-    // 幂等性自检：同一图重复 compute 必须给出同一前向 loss（训练循环依赖此性质）
+    // Idempotency self-check: repeated compute on the same graph must produce the same forward loss (the training loop relies on this)
     float loss_first = 0.0f;
     {
         bool has_loss = false;
@@ -867,7 +867,7 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
             const float loss_second = tensor_get_f32_at(loss, 0);
             const double d = std::fabs((double) loss_second - (double) loss_first);
             if (d > 1e-5 * std::max(1.0, std::fabs((double) loss_first))) {
-                std::printf("[selftest-backward] [warn] 前向不幂等: loss %.6f -> %.6f（差 %.3e）\n",
+                std::printf("[selftest-backward] [warn] forward is not idempotent: loss %.6f -> %.6f (diff %.3e)\n",
                             (double) loss_first, (double) loss_second, d);
             }
         }
@@ -888,7 +888,7 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
         std::vector<uint8_t> ref;
         std::string e2;
         if (!read_file_bytes(join_path(gm.dir, gt.file), &ref, &e2) || ref.size() < sizeof(float)) {
-            std::printf("[selftest-backward]   loss [FAIL] 参考读取失败: %s\n", e2.c_str());
+            std::printf("[selftest-backward]   loss [FAIL] failed to read reference: %s\n", e2.c_str());
             ++loss_failed;
             continue;
         }
@@ -904,7 +904,7 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
         }
     }
 
-    // 诊断：C++ 侧梯度/loss 落盘（与 Python golden 同命名，供与 F64 参考对拍）
+    // Diagnostics: dump C++ side gradients/loss to disk (named the same as Python golden, for comparison against the F64 reference)
     if (!dump_grads.empty()) {
         int dumped = 0;
         for (const GoldenTensor& gt : gm.tensors) {
@@ -936,10 +936,10 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
                 f.write((const char*) &lv, sizeof(lv));
             }
         }
-        std::printf("[selftest-backward] C++ 梯度落盘: %d 项 -> %s\n", dumped, dump_grads.c_str());
+        std::printf("[selftest-backward] C++ gradients dumped: %d entries -> %s\n", dumped, dump_grads.c_str());
     }
 
-    // 数值 gradcheck（中心差分；仅参数；CPU 建议）
+    // Numerical gradcheck (central difference; parameters only; CPU recommended)
     int gc_checked = 0;
     int gc_failed  = 0;
     if (!gradcheck_spec.empty()) {
@@ -991,20 +991,20 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
                 items.push_back({tok, idx});
             }
         }
-        std::printf("[selftest-backward] gradcheck: %zu 项，eps=%.1e，门 rel ≤ %.1e\n", items.size(),
+        std::printf("[selftest-backward] gradcheck: %zu entries, eps=%.1e, gate rel ≤ %.1e\n", items.size(),
                     (double) gc_eps, kGradcheckTol);
         for (const GcItem& it : items) {
             ++gc_checked;
             Tensor* p = params.find(it.name.c_str());
             if (p == nullptr || p->grad_acc == nullptr) {
-                std::printf("[selftest-backward]   gc %-44s [FAIL] 参数或梯度不存在\n",
+                std::printf("[selftest-backward]   gc %-44s [FAIL] parameter or gradient does not exist\n",
                             it.name.c_str());
                 ++gc_failed;
                 continue;
             }
             const int64_t nelem = tensor_nelements(p);
             if (it.idx < 0 || it.idx >= nelem) {
-                std::printf("[selftest-backward]   gc %-44s [FAIL] 下标越界（%lld >= %lld）\n",
+                std::printf("[selftest-backward]   gc %-44s [FAIL] index out of range (%lld >= %lld)\n",
                             it.name.c_str(), (long long) it.idx, (long long) nelem);
                 ++gc_failed;
                 continue;
@@ -1039,9 +1039,9 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     const int total_failed  = grad_failed + loss_failed + gc_failed;
     const bool ok = (total_failed == 0 && total_checked > 0);
     const double max_tol = long_seq ? kBackTolLong : kBackTol;
-    std::printf("[selftest-backward] 对拍 %s（梯度 %d/%d，loss %d/%d，gradcheck %d/%d；"
-                "门 max≤%.0e/rms≤%.0e / loss≤%.0e / gc≤%.0e）\n",
-                ok ? "通过" : "失败", grad_checked - grad_failed, grad_checked,
+    std::printf("[selftest-backward] comparison %s (grads %d/%d, loss %d/%d, gradcheck %d/%d;"
+                " gate max≤%.0e/rms≤%.0e / loss≤%.0e / gc≤%.0e)\n",
+                ok ? "PASS" : "FAIL", grad_checked - grad_failed, grad_checked,
                 loss_checked - loss_failed, loss_checked, gc_checked - gc_failed, gc_checked,
                 max_tol, kBackRmsTol, kLossTol, kGradcheckTol);
 
@@ -1085,7 +1085,7 @@ bool golden_manifest_load(const std::string& dir, const std::string& module, Gol
                           std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "输出为空";
+            *err = "output is null";
         }
         return false;
     }
@@ -1097,7 +1097,7 @@ bool golden_manifest_load(const std::string& dir, const std::string& module, Gol
     if (!common::json_read_file(p1, &root, &e1)) {
         if (!common::json_read_file(p2, &root, &e2)) {
             if (err != nullptr) {
-                *err = "无法读取 golden manifest: " + p1 + "（" + e1 + "）；" + p2 + "（" + e2 + "）";
+                *err = "failed to read golden manifest: " + p1 + " (" + e1 + "); " + p2 + " (" + e2 + ")";
             }
             return false;
         }
@@ -1106,8 +1106,8 @@ bool golden_manifest_load(const std::string& dir, const std::string& module, Gol
     const std::string got = (m != nullptr) ? m->as_string() : std::string();
     if (got != module) {
         if (err != nullptr) {
-            *err = "manifest 模块不匹配: 期望 " + module + "，实际 " +
-                   (got.empty() ? std::string("(缺失)") : got);
+            *err = "manifest module mismatch: expected " + module + ", got " +
+                   (got.empty() ? std::string("(missing)") : got);
         }
         return false;
     }
@@ -1118,7 +1118,7 @@ bool golden_manifest_load(const std::string& dir, const std::string& module, Gol
     const common::JsonValue* ts = root.find("tensors");
     if (ts == nullptr || !ts->is_array()) {
         if (err != nullptr) {
-            *err = "manifest.tensors 缺失或非数组";
+            *err = "manifest.tensors is missing or not an array";
         }
         return false;
     }
@@ -1132,7 +1132,7 @@ bool golden_manifest_load(const std::string& dir, const std::string& module, Gol
         if (name == nullptr || file == nullptr || dtype == nullptr || role == nullptr ||
             shape == nullptr || !shape->is_array() || shape->size() < 1 || shape->size() > 4) {
             if (err != nullptr) {
-                *err = "manifest tensor 条目字段缺失/非法（index " + std::to_string(i) + "）";
+                *err = "manifest tensor entry has missing/invalid fields (index " + std::to_string(i) + ")";
             }
             return false;
         }
@@ -1168,7 +1168,7 @@ bool build_selftest_emb_g(SelftestBuildIO& io, std::string* err) {
     Tensor* sid = io.find_input("sid");
     if (sid == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: sid";
+            *err = "missing golden input: sid";
         }
         return false;
     }
@@ -1198,7 +1198,7 @@ bool build_selftest_wn(SelftestBuildIO& io, std::string* err) {
     Tensor* g      = io.find_input("g");
     if (x == nullptr || x_mask == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: x/x_mask";
+            *err = "missing golden input: x/x_mask";
         }
         return false;
     }
@@ -1206,7 +1206,7 @@ bool build_selftest_wn(SelftestBuildIO& io, std::string* err) {
     Tensor* y = wn_forward(io.ctx, wn, x, x_mask, g, &caps);
     if (y == nullptr) {
         if (err != nullptr) {
-            *err = "wn_forward 失败";
+            *err = "wn_forward failed";
         }
         return false;
     }
@@ -1240,7 +1240,7 @@ bool build_selftest_resblock1(SelftestBuildIO& io, std::string* err) {
     Tensor* x_mask = io.find_input("x_mask");
     if (x == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: x";
+            *err = "missing golden input: x";
         }
         return false;
     }
@@ -1248,7 +1248,7 @@ bool build_selftest_resblock1(SelftestBuildIO& io, std::string* err) {
     Tensor* y = resblock1_forward(io.ctx, rb, x, x_mask, &caps);
     if (y == nullptr) {
         if (err != nullptr) {
-            *err = "resblock1_forward 失败";
+            *err = "resblock1_forward failed";
         }
         return false;
     }
@@ -1282,12 +1282,12 @@ bool build_selftest_dec(SelftestBuildIO& io, std::string* err) {
     Tensor* sine_noise = io.find_input("sine_noise");
     if (z == nullptr || pitchf == nullptr || sine_noise == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: z/pitchf/sine_noise";
+            *err = "missing golden input: z/pitchf/sine_noise";
         }
         return false;
     }
 
-    // 主机侧 SineGen 依赖输入数据（runner 注入之后才能读）→ 先建叶子张量，再挂 prepare 回调
+    // Host-side SineGen depends on input data (readable only after the runner injects it) -> create the leaf tensor first, then attach the prepare callback
     int64_t upp = 1;
     for (int64_t u : cfg.upsample_rates) {
         upp *= u;
@@ -1298,7 +1298,7 @@ bool build_selftest_dec(SelftestBuildIO& io, std::string* err) {
     Tensor* sine_src = new_tensor_3d(io.ctx, TYPE_F32, 1, total, batch);
     if (sine_src == nullptr) {
         if (err != nullptr) {
-            *err = "创建 sine_source 张量失败";
+            *err = "failed to create sine_source tensor";
         }
         return false;
     }
@@ -1317,7 +1317,7 @@ bool build_selftest_dec(SelftestBuildIO& io, std::string* err) {
                                  static_cast<int>(upp), noise.data() + b * total, total, 1234);
             if (static_cast<int64_t>(s.size()) != total) {
                 if (perr != nullptr) {
-                    *perr = "SineGen 输出长度不符";
+                    *perr = "SineGen output length mismatch";
                 }
                 return false;
             }
@@ -1332,13 +1332,13 @@ bool build_selftest_dec(SelftestBuildIO& io, std::string* err) {
     Tensor* o = dec_forward(io.ctx, dec, z, sine_src, g, &caps);
     if (o == nullptr) {
         if (err != nullptr) {
-            *err = "dec_forward 失败";
+            *err = "dec_forward failed";
         }
         return false;
     }
     io.add_compare("sine_source", cont(io.ctx, sine_src));
     if (caps.sine_merged != nullptr) {
-        // golden 布局 [B,L,1] = ne [1,L,B]（C++ 内部用 [L,1,B]，同内存重排视图）
+        // golden layout [B,L,1] = ne [1,L,B] (C++ internally uses [L,1,B], a same-memory reordered view)
         io.add_compare("sine_merged",
                        reshape_3d(io.ctx, cont(io.ctx, caps.sine_merged), 1, total, batch));
     }
@@ -1378,16 +1378,16 @@ bool build_selftest_flow(SelftestBuildIO& io, std::string* err) {
     Tensor* g      = io.find_input("g");
     if (x == nullptr || x_mask == nullptr || g == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: x/x_mask/g";
+            *err = "missing golden input: x/x_mask/g";
         }
         return false;
     }
 
-    // Flip 置换矩阵：建叶子，buffer 分配后由 prepare 回调填充
+    // Flip permutation matrix: create the leaf, filled by the prepare callback after buffer allocation
     Tensor* perm = new_tensor_2d(io.ctx, TYPE_F32, cfg.channels, cfg.channels);
     if (perm == nullptr) {
         if (err != nullptr) {
-            *err = "创建 flip 置换矩阵失败";
+            *err = "failed to create flip permutation matrix";
         }
         return false;
     }
@@ -1398,7 +1398,7 @@ bool build_selftest_flow(SelftestBuildIO& io, std::string* err) {
     Tensor* y = flow_forward(io.ctx, flow, x, x_mask, g, perm, &caps);
     if (y == nullptr) {
         if (err != nullptr) {
-            *err = "flow_forward 失败";
+            *err = "flow_forward failed";
         }
         return false;
     }
@@ -1436,18 +1436,18 @@ bool build_selftest_enc_p(SelftestBuildIO& io, std::string* err) {
     Tensor* x_mask  = io.find_input("x_mask");
     if (phone == nullptr || x_mask == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: phone/x_mask";
+            *err = "missing golden input: phone/x_mask";
         }
         return false;
     }
     const int64_t T = x_mask->ne[0];
     const int64_t B = x_mask->ne[2];
 
-    // 注意力 valid 掩码 [T,T,1,B]（0/1）：依赖 x_mask 数据，buffer 分配后由 prepare 填充
+    // Attention valid mask [T,T,1,B] (0/1): depends on x_mask data, filled by prepare after buffer allocation
     Tensor* attn_valid = new_tensor_4d(io.ctx, TYPE_F32, T, T, 1, B);
     if (attn_valid == nullptr) {
         if (err != nullptr) {
-            *err = "创建 attn_valid 张量失败";
+            *err = "failed to create attn_valid tensor";
         }
         return false;
     }
@@ -1458,7 +1458,7 @@ bool build_selftest_enc_p(SelftestBuildIO& io, std::string* err) {
         float* p = tensor_data_f32(attn_valid);
         if (p == nullptr) {
             if (perr != nullptr) {
-                *perr = "attn_valid 未分配（需在 buffer 分配后填充）";
+                *perr = "attn_valid not allocated (must be filled after buffer allocation)";
             }
             return false;
         }
@@ -1480,7 +1480,7 @@ bool build_selftest_enc_p(SelftestBuildIO& io, std::string* err) {
     EncPOutputs out = enc_p_forward(io.ctx, epm, phone, pitch, x_mask, attn_valid, &caps);
     if (out.m_p == nullptr || out.logs_p == nullptr) {
         if (err != nullptr) {
-            *err = "enc_p_forward 失败";
+            *err = "enc_p_forward failed";
         }
         return false;
     }
@@ -1540,7 +1540,7 @@ bool build_selftest_enc_q(SelftestBuildIO& io, std::string* err) {
     Tensor* noise  = io.find_input("q_noise");
     if (spec == nullptr || x_mask == nullptr || noise == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: spec/x_mask/q_noise";
+            *err = "missing golden input: spec/x_mask/q_noise";
         }
         return false;
     }
@@ -1549,7 +1549,7 @@ bool build_selftest_enc_q(SelftestBuildIO& io, std::string* err) {
     EncQOutputs out = enc_q_forward(io.ctx, eqm, spec, x_mask, g, noise, &caps);
     if (out.m_q == nullptr || out.logs_q == nullptr || out.z == nullptr) {
         if (err != nullptr) {
-            *err = "enc_q_forward 失败";
+            *err = "enc_q_forward failed";
         }
         return false;
     }
@@ -1585,7 +1585,7 @@ bool build_selftest_disc(SelftestBuildIO& io, std::string* err) {
     cfg.stride      = io.golden->param_int("stride", 3);
     if (cfg.periods.empty()) {
         if (err != nullptr) {
-            *err = "golden params.periods 缺失（需用 --module disc 重新生成）";
+            *err = "golden params.periods is missing (regenerate with --module disc)";
         }
         return false;
     }
@@ -1598,7 +1598,7 @@ bool build_selftest_disc(SelftestBuildIO& io, std::string* err) {
     Tensor* wave_hat = io.find_input("wave_hat");
     if (wave == nullptr || wave_hat == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: wave/wave_hat";
+            *err = "missing golden input: wave/wave_hat";
         }
         return false;
     }
@@ -1606,7 +1606,7 @@ bool build_selftest_disc(SelftestBuildIO& io, std::string* err) {
     MpdForward f = mpd_forward(io.ctx, mpd, wave, wave_hat);
     if (f.r.empty() || f.r.size() != f.g.size()) {
         if (err != nullptr) {
-            *err = "mpd_forward 失败";
+            *err = "mpd_forward failed";
         }
         return false;
     }
@@ -1688,7 +1688,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
         spec == nullptr || y_mask == nullptr || q_noise == nullptr || pitchf == nullptr ||
         ids == nullptr || n_full == nullptr || n_slice == nullptr) {
         if (err != nullptr) {
-            *err = "缺少 golden 输入: sid/phone/pitch/x_mask/spec/y_mask/q_noise/pitchf/"
+            *err = "missing golden input: sid/phone/pitch/x_mask/spec/y_mask/q_noise/pitchf/"
                    "ids_slice/sine_noise_full/sine_noise_slice";
         }
         return false;
@@ -1700,7 +1700,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
     const int64_t total_full  = T * upp;
     const int64_t total_slice = seg * upp;
 
-    // 叶子（依赖输入/分配后填充）：attn_valid / flip_perm / slice_mat / 切片 pitchf / 两条 SineGen 源
+    // Leaves (filled after input injection/allocation): attn_valid / flip_perm / slice_mat / slice pitchf / two SineGen sources
     Tensor* attn_valid = new_tensor_4d(io.ctx, TYPE_F32, T, T, 1, B);
     Tensor* perm       = new_tensor_2d(io.ctx, TYPE_F32, cfg.flow.channels, cfg.flow.channels);
     Tensor* slice_mat  = new_tensor_3d(io.ctx, TYPE_F32, T, seg, B);
@@ -1710,7 +1710,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
     if (attn_valid == nullptr || perm == nullptr || slice_mat == nullptr || pf_slice == nullptr ||
         sine_full == nullptr || sine_slice == nullptr) {
         if (err != nullptr) {
-            *err = "创建 synth 叶子张量失败";
+            *err = "failed to create synth leaf tensors";
         }
         return false;
     }
@@ -1727,13 +1727,13 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
         if (!flow_fill_flip_perm(perm, perr)) {
             return false;
         }
-        // attn_valid = x_mask 外积（0/1；复刻 torch masked_fill 替换语义）
+        // attn_valid = outer product of x_mask (0/1; replicates torch masked_fill replace semantics)
         std::vector<float> xm((size_t) (T * B));
         tensor_get(x_mask, xm.data(), 0, xm.size() * sizeof(float));
         float* pa = tensor_data_f32(attn_valid);
         if (pa == nullptr) {
             if (perr != nullptr) {
-                *perr = "attn_valid 未分配（需在 buffer 分配后填充）";
+                *perr = "attn_valid not allocated (must be filled after buffer allocation)";
             }
             return false;
         }
@@ -1746,7 +1746,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
                 }
             }
         }
-        // 固定 ids → slice_mat（0/1）与切片 pitchf（等价 torch slice_segments2）
+        // Fixed ids -> slice_mat (0/1) and slice pitchf (equivalent to torch slice_segments2)
         std::vector<int32_t> idv((size_t) B);
         tensor_get(ids, idv.data(), 0, idv.size() * sizeof(int32_t));
         std::vector<float> pf((size_t) (T * B));
@@ -1755,7 +1755,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
         float* pm = tensor_data_f32(slice_mat);
         if (pm == nullptr) {
             if (perr != nullptr) {
-                *perr = "slice_mat 未分配";
+                *perr = "slice_mat not allocated";
             }
             return false;
         }
@@ -1764,7 +1764,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
             const int64_t id = idv[(size_t) b];
             if (id < 0 || id + seg > T) {
                 if (perr != nullptr) {
-                    *perr = "ids_slice 越界";
+                    *perr = "ids_slice out of range";
                 }
                 return false;
             }
@@ -1775,7 +1775,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
         }
         tensor_set(pf_slice, pfs.data(), 0, pfs.size() * sizeof(float));
 
-        // SineGen（整段 / 切片）：噪声来自 golden 落盘，两侧同源
+        // SineGen (whole segment / slice): noise comes from the golden dump, same source on both sides
         std::vector<float> nf((size_t) (total_full * B));
         std::vector<float> ns((size_t) (total_slice * B));
         tensor_get(n_full, nf.data(), 0, nf.size() * sizeof(float));
@@ -1792,7 +1792,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
                                                     1234);
             if ((int64_t) s.size() != total_full) {
                 if (perr != nullptr) {
-                    *perr = "SineGen（整段）输出长度不符";
+                    *perr = "SineGen (whole segment) output length mismatch";
                 }
                 return false;
             }
@@ -1808,7 +1808,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
                                                      total_slice, 1234);
             if ((int64_t) s2.size() != total_slice) {
                 if (perr != nullptr) {
-                    *perr = "SineGen（切片）输出长度不符";
+                    *perr = "SineGen (slice) output length mismatch";
                 }
                 return false;
             }
@@ -1837,7 +1837,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
     SynthOutputs out = synth_forward(io.ctx, *io.params, mods, in);
     if (out.o_full == nullptr || out.o_slice == nullptr) {
         if (err != nullptr) {
-            *err = "synth_forward 失败";
+            *err = "synth_forward failed";
         }
         return false;
     }
@@ -1872,7 +1872,7 @@ bool build_selftest_synth(SelftestBuildIO& io, std::string* err) {
 int run_forward_selftest(const std::string& weights_path, const std::string& golden_dir,
                          const std::string& module, Device* dev) {
     if (module == "all") {
-        // disc 的权重在独立的 D 文件（f0D40k）→ 不并入 all，需单独 --module disc 指定
+        // disc weights live in a separate D file (f0D40k) -> not part of all, must be run separately with --module disc
         static const char* k_modules[] = {"emb_g", "wn", "resblock1", "dec", "flow", "enc_p",
                                           "enc_q", "synth"};
         int rc = 0;
@@ -1891,7 +1891,7 @@ int run_backward_selftest(const std::string& weights_path, const std::string& go
                           const std::string& module, const std::string& gradcheck,
                           const std::string& dump_grads, Device* dev) {
     if (module == "all") {
-        // 同前向：disc 的权重在独立 D 文件，需单独 --module disc 指定
+        // Same as forward: disc weights live in a separate D file, must be run separately with --module disc
         static const char* k_modules[] = {"emb_g", "wn", "resblock1", "dec", "flow", "enc_p",
                                           "enc_q", "synth"};
         int rc = 0;

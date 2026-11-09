@@ -1,4 +1,4 @@
-// RVC-Train-GGML - WN 门控编码器实现（src/model/wn.cpp）
+// RVC-Train-GGML - WN gated encoder implementation (src/model/wn.cpp)
 #include "model/wn.h"
 
 #include <cstdio>
@@ -13,12 +13,12 @@ using namespace traincpp;
 Tensor* require_param(const ModelParams& params, const std::string& name, std::string* err) {
     Tensor* t = params.find(name.c_str());
     if (t == nullptr && err != nullptr) {
-        *err = "缺失参数: " + name;
+        *err = "missing parameter: " + name;
     }
     return t;
 }
 
-// 手工装配 Conv1d（避免 init helper 改写张量名；前向走显式 weight）
+// Manual Conv1d assembly (avoid init helpers rewriting tensor names; forward uses the explicit weight)
 void wire_conv(Conv1d* layer, Tensor* v, Tensor* bias, int64_t stride, int64_t padding,
                int64_t dilation) {
     layer->weight       = v;
@@ -47,13 +47,13 @@ int64_t ipow(int64_t base, int64_t exp) {
 bool wn_load(const ModelParams& params, const WnConfig& cfg, WnModule* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "WN 输出为空";
+            *err = "WN output is null";
         }
         return false;
     }
     if (cfg.hidden_channels <= 0 || cfg.kernel_size <= 0 || cfg.n_layers <= 0) {
         if (err != nullptr) {
-            *err = "WN 配置非法（hidden/kernel/n_layers 必须 > 0）";
+            *err = "invalid WN config (hidden/kernel/n_layers must be > 0)";
         }
         return false;
     }
@@ -120,14 +120,14 @@ bool wn_load(const ModelParams& params, const WnConfig& cfg, WnModule* out, std:
 Tensor* wn_forward(Context* ctx, const WnModule& wn, Tensor* x, Tensor* x_mask, Tensor* g,
                    WnForwardCaptures* caps) {
     if (ctx == nullptr || x == nullptr || x_mask == nullptr) {
-        std::printf("[wn] 输入为空\n");
+        std::printf("[wn] null input\n");
         return nullptr;
     }
     const int64_t H = wn.cfg.hidden_channels;
     const int64_t T = x->ne[0];
     const int64_t B = x->ne[2];
     if (x->ne[1] != H) {
-        std::printf("[wn] 输入通道 %lld != hidden_channels %lld\n", (long long) x->ne[1],
+        std::printf("[wn] input channels %lld != hidden_channels %lld\n", (long long) x->ne[1],
                     (long long) H);
         return nullptr;
     }
@@ -148,12 +148,12 @@ Tensor* wn_forward(Context* ctx, const WnModule& wn, Tensor* x, Tensor* x_mask, 
 
         Tensor* in_act = x_in;
         if (g_cond != nullptr) {
-            // 按层切片 cond 输出通道：[i*2H, (i+1)*2H)
+            // Slice cond output channels per layer: [i*2H, (i+1)*2H)
             Tensor* g_l = cont(ctx, view_3d(ctx, g_cond, g_cond->ne[0], 2 * H, g_cond->ne[2],
                                             (size_t) i * 2 * H * g_cond->nb[1]));
             in_act = add(ctx, x_in, g_l);
         }
-        // 通道对半：前半 tanh、后半 sigmoid
+        // Split channels in half: first half tanh, second half sigmoid
         Tensor* a = cont(ctx, view_3d(ctx, in_act, T, H, B, 0));
         Tensor* b = cont(ctx, view_3d(ctx, in_act, T, H, B, (size_t) H * in_act->nb[1]));
         Tensor* acts = mul(ctx, tanh_op(ctx, a), sigmoid(ctx, b));

@@ -1,4 +1,4 @@
-// RVC-Train-GGML - RVC 模型配置实现（src/model/config.cpp）
+// RVC-Train-GGML - RVC model configuration implementation (src/model/config.cpp)
 #include "model/config.h"
 
 namespace rvc_train {
@@ -52,68 +52,68 @@ ModelConfig ModelConfig::from_meta(const TrainMeta& m) {
 
 bool ModelConfig::validate(std::string* err) const {
     if (kind != "G" && kind != "D") {
-        set_err(err, "kind 非法（期望 G/D）: " + kind);
+        set_err(err, "invalid kind (expected G/D): " + kind);
         return false;
     }
     if (version != "v1" && version != "v2") {
-        set_err(err, "version 非法（期望 v1/v2）: " + version);
+        set_err(err, "invalid version (expected v1/v2): " + version);
         return false;
     }
 
-    // 判别器：只校验周期表（结构参数由全连接卷积链推导，M2-7 实现）
+    // Discriminator: only validate the period list (structure parameters are derived from the fully-connected convolution chain, implemented in M2-7)
     if (is_discriminator()) {
         if (d_periods.empty()) {
-            set_err(err, "D 模型缺少 rvc.train.d_periods");
+            set_err(err, "D model is missing rvc.train.d_periods");
             return false;
         }
         return true;
     }
 
-    // ---------------------------------------------------------- G（生成器）
+    // ---------------------------------------------------------- G (generator)
     if (inter_channels <= 0 || hidden_channels <= 0 || filter_channels <= 0) {
-        set_err(err, "通道参数非法（inter/hidden/filter 必须 > 0）");
+        set_err(err, "invalid channel parameters (inter/hidden/filter must be > 0)");
         return false;
     }
     if (n_heads <= 0 || n_layers <= 0 || kernel_size <= 0) {
-        set_err(err, "Transformer 参数非法（n_heads/n_layers/kernel_size 必须 > 0）");
+        set_err(err, "invalid Transformer parameters (n_heads/n_layers/kernel_size must be > 0)");
         return false;
     }
     if (inter_channels % n_heads != 0) {
-        set_err(err, "inter_channels 不能被 n_heads 整除");
+        set_err(err, "inter_channels is not divisible by n_heads");
         return false;
     }
     if (gin_channels <= 0 || upsample_initial_channel <= 0 || spk_embed_dim <= 0) {
-        set_err(err, "gin_channels/upsample_initial_channel/spk_embed_dim 必须 > 0");
+        set_err(err, "gin_channels/upsample_initial_channel/spk_embed_dim must be > 0");
         return false;
     }
     if (resblock != "1") {
-        set_err(err, "resblock 仅支持 \"1\"（ResBlock1）: " + resblock);
+        set_err(err, "resblock only supports \"1\" (ResBlock1): " + resblock);
         return false;
     }
     if (resblock_kernel_sizes.empty()) {
-        set_err(err, "resblock_kernel_sizes 为空");
+        set_err(err, "resblock_kernel_sizes is empty");
         return false;
     }
     if (resblock_dilation_sizes.size() != resblock_kernel_sizes.size() * 3) {
-        set_err(err, "resblock_dilation_sizes 展平长度与 kernel 数不符");
+        set_err(err, "flattened resblock_dilation_sizes length does not match the kernel count");
         return false;
     }
     if (upsample_rates.empty() || upsample_rates.size() != upsample_kernel_sizes.size()) {
-        set_err(err, "upsample_rates/upsample_kernel_sizes 非法（为空或长度不一致）");
+        set_err(err, "invalid upsample_rates/upsample_kernel_sizes (empty or length mismatch)");
         return false;
     }
     for (size_t i = 0; i < upsample_rates.size(); ++i) {
         if (upsample_rates[i] <= 0 || upsample_kernel_sizes[i] <= 0) {
-            set_err(err, "upsample_rates/kernel_sizes 存在非正值");
+            set_err(err, "upsample_rates/kernel_sizes contains a non-positive value");
             return false;
         }
     }
     if (hop_length > 0 && segment_size > 0 && segment_size % hop_length != 0) {
-        set_err(err, "segment_size 不能被 hop_length 整除");
+        set_err(err, "segment_size is not divisible by hop_length");
         return false;
     }
     if (filter_length > 0 && spec_channels > 0 && spec_channels != filter_length / 2 + 1) {
-        set_err(err, "spec_channels 与 filter_length 不一致（期望 filter_length/2+1）");
+        set_err(err, "spec_channels is inconsistent with filter_length (expected filter_length/2+1)");
         return false;
     }
     return true;
@@ -178,7 +178,7 @@ ModelConfig default_model_config_v2_48k() {
     c.form = "train";
     c.resblock = "1";
 
-    // v2-48k：hop = 480（= sample_rate/100），特征宽 768
+    // v2-48k: hop = 480 (= sample_rate/100), feature width 768
     c.sample_rate = 48000;
     c.filter_length = 2048;
     c.hop_length = 480;
@@ -187,7 +187,7 @@ ModelConfig default_model_config_v2_48k() {
     c.mel_fmin = 0.0f;
     c.mel_fmax = 0.0f;
     c.spec_channels = c.filter_length / 2 + 1;
-    c.segment_size = 17280;   // 官方 v2-48k segment_size（= 36 z 帧）
+    c.segment_size = 17280;   // official v2-48k segment_size (= 36 z frames)
 
     c.inter_channels = 192;
     c.hidden_channels = 192;
@@ -203,7 +203,7 @@ ModelConfig default_model_config_v2_48k() {
     c.resblock_dilation_sizes = {1, 3, 5, 1, 3, 5, 1, 3, 5};
     c.upsample_rates = {12, 10, 2, 2};           // ∏ = 480
     c.upsample_kernel_sizes = {24, 20, 4, 4};
-    c.d_periods = {2, 3, 5, 7, 11, 17, 23, 37};  // v2 MPD：9 判别器
+    c.d_periods = {2, 3, 5, 7, 11, 17, 23, 37};  // v2 MPD: 9 discriminators
     return c;
 }
 

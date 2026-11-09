@@ -1,4 +1,4 @@
-// RVC-Train-GGML - enc_q（PosteriorEncoder）实现（src/model/enc_q.cpp）
+// RVC-Train-GGML - enc_q (PosteriorEncoder) implementation (src/model/enc_q.cpp)
 #include "model/enc_q.h"
 
 #include <cstdio>
@@ -13,12 +13,12 @@ using namespace traincpp;
 Tensor* require_param(const ModelParams& params, const std::string& name, std::string* err) {
     Tensor* t = params.find(name.c_str());
     if (t == nullptr && err != nullptr) {
-        *err = "缺失参数: " + name;
+        *err = "missing parameter: " + name;
     }
     return t;
 }
 
-// 手工装配 Conv1d（避免 init helper 改写张量名；前向走层内 weight）
+// Manual Conv1d assembly (avoid init helpers rewriting tensor names; forward uses the layer's weight)
 void wire_conv(Conv1d* layer, Tensor* weight, Tensor* bias, int64_t stride, int64_t padding,
                int64_t dilation, const char* name) {
     layer->weight       = weight;
@@ -40,7 +40,7 @@ bool check_ne(const Tensor* t, int64_t ne0, int64_t ne1, int64_t ne2, const std:
         if (err != nullptr) {
             char buf[256];
             std::snprintf(buf, sizeof(buf),
-                          "形状不符: %s 期望 [%lld,%lld,%lld] 实际 [%lld,%lld,%lld]",
+                          "shape mismatch: %s expected [%lld,%lld,%lld] got [%lld,%lld,%lld]",
                           name.c_str(), (long long) ne0, (long long) ne1, (long long) ne2,
                           (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2]);
             *err = buf;
@@ -56,14 +56,14 @@ bool enc_q_load(const ModelParams& params, const EncQConfig& cfg, EncQModule* ou
                 std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "enc_q 输出为空";
+            *err = "enc_q output is null";
         }
         return false;
     }
     if (cfg.in_channels <= 0 || cfg.out_channels <= 0 || cfg.hidden_channels <= 0 ||
         cfg.kernel_size <= 0 || cfg.n_layers <= 0) {
         if (err != nullptr) {
-            *err = "enc_q 配置非法（in/out/hidden/kernel/n_layers 必须 > 0）";
+            *err = "invalid enc_q config (in/out/hidden/kernel/n_layers must be > 0)";
         }
         return false;
     }
@@ -110,7 +110,7 @@ bool enc_q_load(const ModelParams& params, const EncQConfig& cfg, EncQModule* ou
 EncQOutputs enc_q_forward(Context* ctx, const EncQModule& m, Tensor* spec, Tensor* x_mask,
                           Tensor* g, Tensor* noise, EncQCaptures* caps) {
     if (ctx == nullptr || spec == nullptr || x_mask == nullptr || noise == nullptr) {
-        std::printf("[enc_q] 输入为空\n");
+        std::printf("[enc_q] null input\n");
         return {};
     }
     const int64_t OC = m.cfg.out_channels;
@@ -118,7 +118,7 @@ EncQOutputs enc_q_forward(Context* ctx, const EncQModule& m, Tensor* spec, Tenso
     const int64_t B  = spec->ne[2];
     if (spec->ne[1] != m.cfg.in_channels || x_mask->ne[0] != T || x_mask->ne[1] != 1 ||
         x_mask->ne[2] != B || noise->ne[0] != T || noise->ne[1] != OC || noise->ne[2] != B) {
-        std::printf("[enc_q] 输入形状不符: spec ne=[%lld,%lld,%lld] noise ne=[%lld,%lld,%lld]\n",
+        std::printf("[enc_q] input shape mismatch: spec ne=[%lld,%lld,%lld] noise ne=[%lld,%lld,%lld]\n",
                     (long long) spec->ne[0], (long long) spec->ne[1], (long long) spec->ne[2],
                     (long long) noise->ne[0], (long long) noise->ne[1], (long long) noise->ne[2]);
         return {};
@@ -127,7 +127,7 @@ EncQOutputs enc_q_forward(Context* ctx, const EncQModule& m, Tensor* spec, Tenso
     // pre(x)·mask
     Tensor* h = conv1d_forward(ctx, &m.pre, spec);
     if (h == nullptr) {
-        std::printf("[enc_q] pre 卷积失败\n");
+        std::printf("[enc_q] pre convolution failed\n");
         return {};
     }
     if (caps != nullptr) {
@@ -139,7 +139,7 @@ EncQOutputs enc_q_forward(Context* ctx, const EncQModule& m, Tensor* spec, Tenso
     WnForwardCaptures wcaps;
     Tensor* e = wn_forward(ctx, m.enc, h, x_mask, g, &wcaps);
     if (e == nullptr) {
-        std::printf("[enc_q] WN 前向失败\n");
+        std::printf("[enc_q] WN forward failed\n");
         return {};
     }
     if (caps != nullptr) {
@@ -149,10 +149,10 @@ EncQOutputs enc_q_forward(Context* ctx, const EncQModule& m, Tensor* spec, Tenso
         caps->enc   = e;
     }
 
-    // proj(x)·mask → split → z 采样
+    // proj(x)·mask -> split -> z sampling
     Tensor* stats_raw = conv1d_forward(ctx, &m.proj, e);
     if (stats_raw == nullptr) {
-        std::printf("[enc_q] proj 卷积失败\n");
+        std::printf("[enc_q] proj convolution failed\n");
         return {};
     }
     if (caps != nullptr) {

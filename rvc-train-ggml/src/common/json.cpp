@@ -1,4 +1,4 @@
-// RVC-Train-GGML - 极简 JSON 解析实现（src/common/json.cpp）
+// RVC-Train-GGML - minimal JSON parser implementation (src/common/json.cpp)
 #include "common/json.h"
 
 #include <cstdio>
@@ -89,7 +89,7 @@ struct JsonParser {
     bool parse_value(JsonValue* out) {
         skip_ws();
         if (p >= end) {
-            return fail("值不完整");
+            return fail("incomplete value");
         }
         switch (*p) {
             case '{':
@@ -105,20 +105,20 @@ struct JsonParser {
                     out->boolean_ = true;
                     return true;
                 }
-                return fail("非法字面量（期望 true）");
+                return fail("invalid literal (expected true)");
             case 'f':
                 if (match("false")) {
                     out->type_ = JsonValue::Type::Bool;
                     out->boolean_ = false;
                     return true;
                 }
-                return fail("非法字面量（期望 false）");
+                return fail("invalid literal (expected false)");
             case 'n':
                 if (match("null")) {
                     out->type_ = JsonValue::Type::Null;
                     return true;
                 }
-                return fail("非法字面量（期望 null）");
+                return fail("invalid literal (expected null)");
             default:
                 return parse_number(out);
         }
@@ -135,13 +135,13 @@ struct JsonParser {
             }
         }
         if (p == start) {
-            return fail(std::string("非法字符: ") + (p < end ? *p : '\0'));
+            return fail(std::string("invalid character: ") + (p < end ? *p : '\0'));
         }
         const std::string text(start, (size_t) (p - start));
         char* endp = nullptr;
         const double v = std::strtod(text.c_str(), &endp);
         if (endp == nullptr || *endp != '\0') {
-            return fail("非法数字: " + text);
+            return fail("invalid number: " + text);
         }
         out->type_ = JsonValue::Type::Number;
         out->number_ = v;
@@ -150,7 +150,7 @@ struct JsonParser {
 
     bool parse_string(std::string* out) {
         if (p >= end || *p != '"') {
-            return fail("字符串缺少引号");
+            return fail("string is missing the opening quote");
         }
         ++p;
         out->clear();
@@ -164,7 +164,7 @@ struct JsonParser {
                 continue;
             }
             if (p >= end) {
-                return fail("字符串转义不完整");
+                return fail("incomplete string escape");
             }
             const char e = *p++;
             switch (e) {
@@ -180,11 +180,11 @@ struct JsonParser {
                     uint32_t cp = 0;
                     for (int i = 0; i < 4; ++i) {
                         if (p >= end) {
-                            return fail("\\u 转义不完整");
+                            return fail("\\u escape is incomplete");
                         }
                         const int hv = hex_value(*p++);
                         if (hv < 0) {
-                            return fail("\\u 转义含非十六进制字符");
+                            return fail("\\u escape contains a non-hex character");
                         }
                         cp = (cp << 4) | (uint32_t) hv;
                     }
@@ -192,10 +192,10 @@ struct JsonParser {
                     break;
                 }
                 default:
-                    return fail(std::string("未知转义: \\") + e);
+                    return fail(std::string("unknown escape: \\") + e);
             }
         }
-        return fail("字符串未闭合");
+        return fail("unterminated string");
     }
 
     bool parse_array(JsonValue* out) {
@@ -214,7 +214,7 @@ struct JsonParser {
             out->array_.push_back(std::move(item));
             skip_ws();
             if (p >= end) {
-                return fail("数组未闭合");
+                return fail("unterminated array");
             }
             if (*p == ',') {
                 ++p;
@@ -224,7 +224,7 @@ struct JsonParser {
                 ++p;
                 return true;
             }
-            return fail("数组元素后缺少 , 或 ]");
+            return fail("missing , or ] after array element");
         }
     }
 
@@ -244,7 +244,7 @@ struct JsonParser {
             }
             skip_ws();
             if (p >= end || *p != ':') {
-                return fail("对象键后缺少 :");
+                return fail("missing : after object key");
             }
             ++p;
             JsonValue value;
@@ -254,7 +254,7 @@ struct JsonParser {
             out->object_.emplace_back(std::move(key), std::move(value));
             skip_ws();
             if (p >= end) {
-                return fail("对象未闭合");
+                return fail("unterminated object");
             }
             if (*p == ',') {
                 ++p;
@@ -264,7 +264,7 @@ struct JsonParser {
                 ++p;
                 return true;
             }
-            return fail("对象成员后缺少 , 或 }");
+            return fail("missing , or } after object member");
         }
     }
 };
@@ -272,7 +272,7 @@ struct JsonParser {
 bool JsonValue::parse(const std::string& text, JsonValue* out, std::string* err) {
     if (out == nullptr) {
         if (err != nullptr) {
-            *err = "输出为空";
+            *err = "output is null";
         }
         return false;
     }
@@ -283,7 +283,7 @@ bool JsonValue::parse(const std::string& text, JsonValue* out, std::string* err)
     if (!parser.parse_value(&root)) {
         if (err != nullptr) {
             char buf[128];
-            std::snprintf(buf, sizeof(buf), "JSON 解析失败（偏移 %lld）: %s",
+            std::snprintf(buf, sizeof(buf), "JSON parse failed (offset %lld): %s",
                           (long long) (parser.p - text.c_str()), parser.err.c_str());
             *err = buf;
         }
@@ -292,7 +292,7 @@ bool JsonValue::parse(const std::string& text, JsonValue* out, std::string* err)
     parser.skip_ws();
     if (parser.p != parser.end) {
         if (err != nullptr) {
-            *err = "JSON 末尾有多余内容";
+            *err = "trailing content after the JSON value";
         }
         return false;
     }
@@ -363,7 +363,7 @@ bool json_read_file(const std::string& path, JsonValue* out, std::string* err) {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法打开文件: " + path;
+            *err = "cannot open file: " + path;
         }
         return false;
     }

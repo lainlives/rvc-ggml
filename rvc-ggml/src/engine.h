@@ -1,5 +1,5 @@
 // engine.h
-// ggml 后端管理与通用图执行引擎：设备枚举、图构建/缓存、输入输出读写。
+// ggml backend management and generic graph execution engine: device enumeration, graph construction/caching, input/output read/write.
 
 #pragma once
 
@@ -19,13 +19,13 @@ namespace rvc {
         std::string description;
     };
 
-    // 枚举 GPU 类设备（Vulkan/CUDA 等）
+    // Enumerate GPU-class devices (Vulkan/CUDA, etc.)
     std::vector<GpuDeviceInfo> list_gpu_devices();
 
-    // 设备管理（RAII）
+    // Device management (RAII)
     class GgmlDevice {
     public:
-        // device_id: >=0 = 第 N 个 GPU 类设备；99 = 强制 CPU
+        // device_id: >=0 = the Nth GPU-class device; 99 = force CPU
         explicit GgmlDevice(int device_id = 99);
         ~GgmlDevice();
         GgmlDevice(const GgmlDevice&) = delete;
@@ -39,7 +39,7 @@ namespace rvc {
         std::string name_;
     };
 
-    // 通用图执行引擎：构建图并运行
+    // Generic graph execution engine: build a graph and run it
     class GgmlGraphRunner {
     public:
         GgmlGraphRunner(ggml_backend_t backend, size_t ctx_mem_size, int max_nodes);
@@ -50,19 +50,19 @@ namespace rvc {
         ggml_context* ctx() const { return ctx_; }
         ggml_cgraph* graph() const { return graph_; }
 
-        // 扩展图（构建阶段调用）：把节点展开到计算图
+        // Expand the graph (called during construction): expand nodes into the compute graph
         void expand(ggml_tensor* node);
 
-        // 分配计算缓冲（图构建完成后调用一次；返回 false 表示失败）
+        // Allocate the compute buffer (called once after graph construction; returns false on failure)
         bool allocate();
 
         size_t buffer_size() const { return buffer_size_; }
         int node_count() const { return node_count_; }
 
-        // 执行图
+        // Execute the graph
         void compute();
 
-        // 上传输入 / 读取输出（主机侧 vector）
+        // Upload inputs / read outputs (host-side vector)
         void set_input(ggml_tensor* t, const void* data, size_t size);
         void get_output(ggml_tensor* t, void* data, size_t size) const;
 

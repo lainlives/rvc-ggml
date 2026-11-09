@@ -1,10 +1,10 @@
 // synthesizer.h
-// RVC 合成器（SynthesizerTrnMs256/768 NSF）的 ggml 实现：
-//   enc_p（TextEncoder 相对位置注意力 + pitch 嵌入）
-//   -> flow（4×残差耦合逆变换 + Flip）
-//   -> dec（HiFiGAN NSF 生成器，sine 激励 + 噪声卷积）
-// 布局约定：图中张量统一 [C, T]（C 在 ne0，与 PyTorch [B,C,T] 内存转置对应），
-//          生成器内部单独使用 [T, C]（卷积自然序）。
+// ggml implementation of the RVC synthesizer (SynthesizerTrnMs256/768 NSF):
+//   enc_p (TextEncoder relative-position attention + pitch embedding)
+//   -> flow (4× residual coupling inverse transform + Flip)
+//   -> dec (HiFiGAN NSF generator, sine excitation + noise convolution)
+// Layout convention: graph tensors are uniformly [C, T] (C in ne0, corresponding to PyTorch [B,C,T] memory transpose),
+//          the generator internally uses [T, C] alone (natural convolution order).
 
 #pragma once
 
@@ -32,9 +32,9 @@ namespace vits {
         int hidden_channels = 192;
         int filter_channels = 768;
         int n_heads = 2;
-        int n_layers = 6;             // enc_p 注意力层数
-        int kernel_size = 3;          // enc_p FFN 卷积核
-        int window_size = 10;         // 相对位置窗口
+        int n_layers = 6;             // number of enc_p attention layers
+        int kernel_size = 3;          // enc_p FFN kernel size
+        int window_size = 10;         // relative-position window
         std::vector<int> resblock_kernel_sizes;
         std::vector<int> resblock_dilation_sizes;
         std::vector<int> upsample_rates;
@@ -42,34 +42,34 @@ namespace vits {
         int upsample_initial_channel = 512;
         int spk_embed_dim = 0;
         int gin_channels = 256;
-        int flow_n_layers = 3;        // flow WN 层数（从权重探测）
+        int flow_n_layers = 3;        // number of flow WN layers (detected from weights)
         int64_t hop_samples = 0;      // prod(upsample_rates)
-        bool conv_flat = false;       // GGUF rvc.conv_flat：Conv1d 权重为展平布局（量化友好）
+        bool conv_flat = false;       // GGUF rvc.conv_flat: Conv1d weights use the flattened layout (quantization-friendly)
     };
 
     Config read_config(const GgufModel& model);
 
-    // 构建期登记的常量输入（相对位置嵌入、翻转矩阵等，分配到后端后写入一次）
+    // Constant inputs registered at build time (relative-position embeddings, flip matrix, etc.; written once after backend allocation)
     struct GraphInput {
         ggml_tensor* tensor = nullptr;
         std::vector<float> values;
     };
 
     struct Input {
-        int64_t frames = 0;           // 帧数（100fps）
+        int64_t frames = 0;           // frame count (100fps)
         int feature_dim = 0;          // 256/768
         int speaker_id = 0;
-        std::vector<float> features;  // [frames, feature_dim] 行主序
-        std::vector<int32_t> pitch;   // [frames]（has_f0）
-        std::vector<float> source;    // [frames*hop] raw sine（has_f0）
-        std::vector<float> noise;     // [frames, inter_channels] 行主序
+        std::vector<float> features;  // [frames, feature_dim] row-major
+        std::vector<int32_t> pitch;   // [frames] (has_f0)
+        std::vector<float> source;    // [frames*hop] raw sine (has_f0)
+        std::vector<float> noise;     // [frames, inter_channels] row-major
     };
 
     struct Output {
         int sample_rate = 0;
-        int64_t samples = 0;          // 音频样本数
+        int64_t samples = 0;          // number of audio samples
         std::vector<float> audio;
-        std::vector<float> m_p;       // [frames, inter] 行主序（验证用）
+        std::vector<float> m_p;       // [frames, inter] row-major (for validation)
         std::vector<float> logs_p;
         std::vector<float> z_p;
         std::vector<float> z;
@@ -84,7 +84,7 @@ namespace vits {
 
         const Config& config() const { return cfg_; }
 
-        // 运行一次完整合成（相同 frames/feature_dim/sid 会复用静态图）
+        // Run one full synthesis (a static graph is reused for the same frames/feature_dim/sid)
         Output infer(const Input& input);
 
     private:
@@ -112,18 +112,18 @@ namespace vits {
         ggml_tensor* out_z_ = nullptr;
     };
 
-    // 子图构建（供 synthesizer 调用，也可单测）
-    //   stats: enc_p 输出 [inter*2, T]（前 half=m，后 half=logs）
+    // Subgraph builders (called by synthesizer; also unit-testable)
+    //   stats: enc_p output [inter*2, T] (first half=m, second half=logs)
     ggml_tensor* build_text_encoder_stats(ggml_context* ctx, const GgufModel& model,
         const Config& cfg, ggml_tensor* features, ggml_tensor* pitch_i32,
         int64_t frames, std::vector<GraphInput>& constants);
 
-    //   z_p [inter,T] -> z [inter,T]（reverse=True 的逆流）
+    //   z_p [inter,T] -> z [inter,T] (inverse flow with reverse=True)
     ggml_tensor* build_flow_reverse(ggml_context* ctx, const GgufModel& model,
         const Config& cfg, ggml_tensor* z_p, ggml_tensor* g, int64_t frames,
         ggml_tensor* flip_matrix);
 
-    //   z [inter,T] -> audio [T_final]（生成器，输出张量 [T_final, 1]）
+    //   z [inter,T] -> audio [T_final] (generator; output tensor [T_final, 1])
     ggml_tensor* build_generator(ggml_context* ctx, const GgufModel& model,
         const Config& cfg, ggml_tensor* z, ggml_tensor* g, ggml_tensor* source,
         int64_t frames);

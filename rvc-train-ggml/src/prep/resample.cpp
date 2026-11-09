@@ -1,4 +1,4 @@
-// resample.cpp —— M4 预处理重采样实现（载入自研核 + 16k resampy kaiser_best 仿真）
+// resample.cpp -- M4 preprocessing resampling implementation (load-branch in-house kernel + 16k resampy kaiser_best emulation)
 
 #include "prep/resample.h"
 
@@ -30,7 +30,7 @@ double sinc(double x) {
     return std::sin(px) / px;
 }
 
-// 零阶修正贝塞尔函数 I0（级数展开）
+// Zeroth-order modified Bessel function I0 (series expansion)
 double bessel_i0(double x) {
     double sum = 1.0;
     double term = 1.0;
@@ -45,7 +45,7 @@ double bessel_i0(double x) {
     return sum;
 }
 
-// numpy 'reflect' 语义（不含边缘重复）
+// numpy 'reflect' semantics (no edge repetition)
 int64_t reflect_index(int64_t i, int64_t n) {
     if (n <= 1) {
         return 0;
@@ -71,7 +71,7 @@ std::vector<float> resample_sinc(const std::vector<float>& in, int src_sr, int d
     const int64_t down = src_sr / g;  // D
 
     const double scale = std::min(1.0, static_cast<double>(dst_sr) / static_cast<double>(src_sr));
-    const double half = 32.0 / scale;  // 核半宽（输入样本域；下采样时展宽保证阻带）
+    const double half = 32.0 / scale;  // kernel half-width (input sample domain; widened on downsampling to preserve the stopband)
     const int64_t i_half = static_cast<int64_t>(std::ceil(half));
     const double beta = 8.0;
     const double i0_beta = bessel_i0(beta);
@@ -110,20 +110,20 @@ std::vector<float> resample_sinc(const std::vector<float>& in, int src_sr, int d
 }
 
 // ---------------------------------------------------------------------------
-// resampy kaiser_best 位级仿真（16k 分支）
+// resampy kaiser_best bit-level emulation (16k branch)
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// npz 表参数（kaiser_best.npz：half_window 长 409601、precision=8192、rolloff 全精度）；
-// beta 未存于 npz，按 npz half_window 反推（scipy.signal.windows.kaiser 语义）。
+// npz table params (kaiser_best.npz: half_window length 409601, precision=8192, rolloff full precision);
+// beta is not stored in the npz and was back-derived from the npz half_window (scipy.signal.windows.kaiser semantics).
 constexpr int kKaiserNumZeros = 50;
 constexpr int kKaiserNumTable = 8192;
 constexpr double kKaiserRolloff = 0.91734737126087607;
 constexpr double kKaiserBeta = 12.984585153568657;
 
-// np.kaiser/scipy.signal.windows.kaiser 的右半窗 + sinc：win[j] = taper[j]*rolloff*sinc(rolloff*p)
-// p = linspace(0, 50, n+1)[j]（n = 8192*50 = 409600，p = j/8192 精确）
+// right half of np.kaiser/scipy.signal.windows.kaiser + sinc: win[j] = taper[j]*rolloff*sinc(rolloff*p)
+// p = linspace(0, 50, n+1)[j] (n = 8192*50 = 409600, p = j/8192 exactly)
 const std::vector<double>& kaiser_best_table() {
     static const std::vector<double> table = [] {
         const int64_t n = static_cast<int64_t>(kKaiserNumTable) * kKaiserNumZeros;
@@ -141,7 +141,7 @@ const std::vector<double>& kaiser_best_table() {
     return table;
 }
 
-// resampy core.py：ratio<1 时表整体乘 ratio；interp_delta = np.diff(win, append=win[-1])
+// resampy core.py: when ratio<1 the whole table is multiplied by ratio; interp_delta = np.diff(win, append=win[-1])
 struct KaiserBestKernel {
     double ratio = 0.0;
     std::vector<double> win;
@@ -179,7 +179,7 @@ std::vector<double> resample_kaiser_best(const std::vector<double>& in, int src_
         return in;
     }
     const double ratio = static_cast<double>(dst_sr) / static_cast<double>(src_sr);
-    // 官方：shape[axis] = int(shape[axis] * float(sr_new) / float(sr_orig))（截断）
+    // official: shape[axis] = int(shape[axis] * float(sr_new) / float(sr_orig)) (truncation)
     const int64_t n_out = static_cast<int64_t>(static_cast<double>(in.size()) *
                                                static_cast<double>(dst_sr) /
                                                static_cast<double>(src_sr));
@@ -198,16 +198,16 @@ std::vector<double> resample_kaiser_best(const std::vector<double>& in, int src_
     const double time_increment = 1.0 / ratio;
     const int64_t index_step = static_cast<int64_t>(scale * static_cast<double>(num_table));
     if (index_step <= 0) {
-        // 极端下采样比（src > num_table*dst）；resampy 亦不可用，明确返回空
+        // extreme downsampling ratio (src > num_table*dst); resampy is also unusable, explicitly return empty
         return {};
     }
 
     std::vector<double> out(static_cast<std::size_t>(n_out), 0.0);
     for (int64_t t = 0; t < n_out; ++t) {
-        // resampy interpn._resample_loop（左翼 → 右翼，顺序必须一致保证浮点累加一致）
+        // resampy interpn._resample_loop (left wing -> right wing; order must match to keep floating-point accumulation identical)
         const double time_register =
             static_cast<double>(t) * time_increment;  // t_out = arange(n_out)*time_increment
-        const int64_t n = static_cast<int64_t>(time_register);  // int() 截断
+        const int64_t n = static_cast<int64_t>(time_register);  // int() truncation
         double frac = scale * (time_register - static_cast<double>(n));
 
         double index_frac = frac * static_cast<double>(num_table);

@@ -1,135 +1,127 @@
 # RVC-GGML
 
-纯 C++ / [ggml](https://github.com/ggml-org/ggml) 实现的 [RVC（Retrieval-based-Voice-Conversion）](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)**训练 + 推理**，无需 CUDA——**AMD / Intel / NVIDIA 显卡通过 Vulkan 均可加速**，无独显也可 CPU 运行。
+A pure C++ / [ggml](https://github.com/ggml-org/ggml) implementation of [RVC (Retrieval-based-Voice-Conversion)](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) **training + inference**, no CUDA required — **AMD / Intel / NVIDIA GPUs can all be accelerated through Vulkan**, and it also runs on CPU with no discrete GPU.
 
-- **rvc-ggml**：推理。把 Python/PyTorch 的 RVC 推理链路（HuBERT 特征 → RMVPE 变调 → VITS 合成 → FAISS 检索）完整移植为 C++ + ggml，模型以 GGUF 格式分发。
-- **rvc-train-ggml**：训练。基于 [train.cpp](https://github.com/Chui-Las/train.cpp) v0.4.0（C++ 深度学习训练库，autograd + Vulkan 后端，设备端优化器 + device-local 训练缓冲）实现 RVC 的预处理、GAN 训练循环与推理模型导出，与 rvc-ggml 形成"训练 → 导出 GGUF → 推理"的闭环。
+- **rvc-ggml**: inference. A complete port of the Python/PyTorch RVC inference chain (HuBERT features → RMVPE pitch → VITS synthesis → FAISS retrieval) to C++ + ggml; models are distributed in GGUF format.
+- **rvc-train-ggml**: training. Based on [train.cpp](https://github.com/Chui-Las/train.cpp) v0.4.0 (a C++ deep-learning training library with autograd + Vulkan backend, on-device optimizer and device-local training buffers), it implements RVC preprocessing, the GAN training loop and inference-model export, forming a "train → export GGUF → inference" closed loop with rvc-ggml.
 
-> 设计目标：输出与 Python 原版数值/听感一致（导出模型严格自检 corr=1.0000，端到端 corr ≥ 0.999）。
+> Design goal: output numerically and perceptually consistent with the original Python version (exported models pass strict self-tests with corr=1.0000; end-to-end corr ≥ 0.999).
 
-## 仓库结构
+## Repository structure
 
 ```
-├── rvc-ggml/          推理（RVC-GGML.exe + Python 模型转换脚本）
-├── rvc-train-ggml/    训练（rvc-prep.exe 预处理 + rvc-train.exe 训练/导出）
+├── rvc-ggml/          inference (RVC-GGML.exe + Python model-conversion scripts)
+├── rvc-train-ggml/    training (rvc-prep.exe preprocessing + rvc-train.exe training/export)
 └── third_party/
-    └── train.cpp/     训练库（git submodule）
+    └── train.cpp/     training library (git submodule)
 ```
 
-## 系统要求
+## System requirements
 
-- Windows 10/11 x64（当前验证的主平台）
-- CMake ≥ 3.20、MSVC（Visual Studio C++ 工具集）、Ninja
-- [Vulkan SDK](https://vulkan.lunarg.com/)（含 glslc；不装则自动回退纯 CPU）
-- 支持 Vulkan 1.2 的 GPU（显存/共享内存 ≥ 4GB 起步）；无 GPU 可用 CPU 后端
+- Windows 10/11 x64 (the currently verified primary platform)
+- CMake ≥ 3.20, MSVC (Visual Studio C++ toolset), Ninja
+- [Vulkan SDK](https://vulkan.lunarg.com/) (including glslc; without it the build automatically falls back to pure CPU)
+- A GPU supporting Vulkan 1.2 (4 GB of VRAM/shared memory as a starting point); with no GPU the CPU backend can be used
 
-## 构建
+## Build
 
 ```powershell
 git clone --recursive https://github.com/Chui-Las/RVC-GGML.git RVC-GGML
 cd RVC-GGML
 
-# 训练侧（会级联构建 rvc-prep / rvc-train / RVC-GGML）
+# Training side (cascade-builds rvc-prep / rvc-train / RVC-GGML)
 powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1
-# 产物在 rvc-train-ggml\build\bin\
-# cmake/ninja 不在 PATH 时，脚本会自动使用 Visual Studio 自带的版本
+# Artifacts land in rvc-train-ggml\build\bin\
+# When cmake/ninja are not on PATH, the script automatically uses the versions bundled with Visual Studio
 ```
 
-或手动 CMake：
+Or manually with CMake:
 
 ```powershell
 cmake -S rvc-train-ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-ggml 依赖自动解析：FetchContent 拉取官方 ggml v0.23.0 后自动应用本项目补丁
-（见 `rvc-ggml/patches/`）；也可用 `-DRVC_GGML_DIR=<本地 ggml 源码>` 指定本地副本。
+The ggml dependency is resolved automatically: FetchContent pulls official ggml v0.23.0 and then applies this project's patch (see `rvc-ggml/patches/`); you can also point at a local copy with `-DRVC_GGML_DIR=<local ggml source>`.
 
-## 快速上手
+## Quick start
 
-### 1. 模型转换（.pth → GGUF）
+### 1. Model conversion (.pth → GGUF)
 
-需要原版 RVC 生态的模型文件（hubert_base.pt、rmvpe.pt、角色 .pth/.index）：
+Requires model files from the original RVC ecosystem (hubert_base.pt, rmvpe.pt, character .pth/.index):
 
 ```powershell
 cd rvc-ggml
-python scripts\export_gguf.py hubert --input <RVC目录>\assets\hubert\hubert_base.pt --out models\hubert.gguf --dtype fp16
-python scripts\export_gguf.py rmvpe  --input <RVC目录>\assets\rmvpe\rmvpe.pt       --out models\rmvpe.gguf  --dtype q8_0
-python scripts\export_gguf.py model  --input <角色.pth>                             --out models\<角色>.gguf --dtype q4_0
-python scripts\export_gguf.py index  --input <角色.index>                           --out models\<角色>.index.gguf
-# 或从原版 RVC 根目录一键批量：
-python scripts\export_gguf.py all --rvc-root <RVC目录> --out models --dtype fp16
+python scripts\export_gguf.py hubert --input <RVC dir>\assets\hubert\hubert_base.pt --out models\hubert.gguf --dtype fp16
+python scripts\export_gguf.py rmvpe  --input <RVC dir>\assets\rmvpe\rmvpe.pt       --out models\rmvpe.gguf  --dtype q8_0
+python scripts\export_gguf.py model  --input <character.pth>                        --out models\<character>.gguf --dtype q4_0
+python scripts\export_gguf.py index  --input <character.index>                      --out models\<character>.index.gguf
+# Or batch-convert everything from the original RVC root in one command:
+python scripts\export_gguf.py all --rvc-root <RVC dir> --out models --dtype fp16
 ```
 
-### 2. 推理
+### 2. Inference
 
 ```powershell
-RVC-GGML.exe --input input.wav --model models\<角色>.gguf \
-             --index models\<角色>.index.gguf --index-rate 0.75 \
+RVC-GGML.exe --input input.wav --model models\<character>.gguf \
+             --index models\<character>.index.gguf --index-rate 0.75 \
              --model-dir models --device 0 --output output.wav
-# --device 0 = Vulkan（默认列出后选择），99 = CPU
+# --device 0 = Vulkan (lists devices first, then prompts for selection); 99 = CPU
 RVC-GGML.exe --list-devices
-# 不带参数启动进入交互式向导；模型训练参数（变调/检索率等）内嵌于角色 GGUF
+# Launching without arguments enters the interactive wizard; model training parameters (pitch shift / retrieval rate, etc.) are embedded in the character GGUF
 ```
 
-### 3. 训练
+### 3. Training
 
-微调官方预训练模型（最小闭环）：
+Fine-tune the official pretrained models (minimal closed loop):
 
 ```powershell
 cd ..\rvc-train-ggml
-# 0) 官方预训练 G/D .pth → 训练态 GGUF（一次性，见 tools\README.md）
-python tools\pth_to_train_gguf.py --pth <RVC目录>\assets\pretrained\f0G40k.pth --config configs\v1-40k-f0.json --out work\f0G40k.train.gguf
-python tools\pth_to_train_gguf.py --pth <RVC目录>\assets\pretrained\f0D40k.pth --config configs\v1-40k-f0.json --out work\f0D40k.train.gguf
+# 0) Official pretrained G/D .pth -> training-state GGUF (one-time, see tools\README.md)
+python tools\pth_to_train_gguf.py --pth <RVC dir>\assets\pretrained\f0G40k.pth --config configs\v1-40k-f0.json --out work\f0G40k.train.gguf
+python tools\pth_to_train_gguf.py --pth <RVC dir>\assets\pretrained\f0D40k.pth --config configs\v1-40k-f0.json --out work\f0D40k.train.gguf
 
-# 1) 预处理 + 训练 + 导出 + 闭环推理，一条命令：
+# 1) Preprocess + train + export + closed-loop inference in one command:
 powershell -ExecutionPolicy Bypass -File scripts\train_pipeline.ps1 `
     -Audio "D:\myvoice" -Mode finetune `
     -G work\f0G40k.train.gguf -D work\f0D40k.train.gguf `
     -Epochs 50 -ExportEvery 5 -Export -Infer -InferInput test.wav
 
-# 或交互式向导（双击 exe / 不带参数运行）：
+# Or the interactive wizard (double-click the exe / run without arguments):
 rvc-train.exe --interactive
-# 从零训练：向导中选择"从零"，或 rvc-train --scratch --train configs\v1-40k-f0.json
+# Train from scratch: choose "scratch" in the wizard, or rvc-train --scratch --train configs\v1-40k-f0.json
 ```
 
-> 注意：预处理（rvc-prep，ggml 后端）与训练（rvc-train，traincpp 后端）是两个独立进程，
-> 由 train_pipeline.ps1 / 向导自动串联，不能在一个 exe 内完成全部步骤。
+> Note: preprocessing (rvc-prep, ggml backend) and training (rvc-train, traincpp backend) are two separate processes, chained automatically by train_pipeline.ps1 / the wizard; a single exe cannot complete all the steps.
 
-## 文档索引
+## Documentation index
 
-| 文档 | 内容 |
+| Document | Contents |
 |---|---|
-| [`rvc-ggml/docs/使用文档_发布版使用与原版对比.md`](rvc-ggml/docs/使用文档_发布版使用与原版对比.md) | 推理使用说明、参数对照、常见报错 |
-| [`rvc-ggml/docs/技术文档四_源码结构与模块手册.md`](rvc-ggml/docs/技术文档四_源码结构与模块手册.md) | 推理侧源码结构与接口手册 |
-| [`rvc-ggml/docs/技术文档三_统一实现细节_Python转ggml.md`](rvc-ggml/docs/技术文档三_统一实现细节_Python转ggml.md) | 算子映射与流水线数学定义（自包含） |
-| [`rvc-ggml/docs/技术文档二_ggml_Vulkan实现细节.md`](rvc-ggml/docs/技术文档二_ggml_Vulkan实现细节.md) | GGUF 布局、量化、Vulkan 适配与坑 |
-| [`rvc-ggml/docs/技术文档一_项目移植与实现概览.md`](rvc-ggml/docs/技术文档一_项目移植与实现概览.md) | 推理移植概览与功能对照 |
-| [`rvc-train-ggml/docs/使用指南.md`](rvc-train-ggml/docs/使用指南.md) | 训练全流程使用说明 |
-| [`rvc-train-ggml/docs/数字手册.md`](rvc-train-ggml/docs/数字手册.md) | 训练参数/日志数字判读 |
-| [`rvc-train-ggml/docs/架构设计.md`](rvc-train-ggml/docs/架构设计.md) | 训练侧架构、数据流、GGUF schema、缓存格式 |
+| [`rvc-ggml/docs/usage_release_vs_original.md`](rvc-ggml/docs/usage_release_vs_original.md) | Inference usage instructions, parameter mapping, common errors |
+| [`rvc-ggml/docs/technical_04_source_map_and_module_manual.md`](rvc-ggml/docs/technical_04_source_map_and_module_manual.md) | Inference-side source structure and interface manual |
+| [`rvc-ggml/docs/technical_03_unified_implementation_python_to_ggml.md`](rvc-ggml/docs/technical_03_unified_implementation_python_to_ggml.md) | Operator mapping and pipeline math definitions (self-contained) |
+| [`rvc-ggml/docs/technical_02_ggml_vulkan_details.md`](rvc-ggml/docs/technical_02_ggml_vulkan_details.md) | GGUF layout, quantization, Vulkan adaptation and pitfalls |
+| [`rvc-ggml/docs/technical_01_port_overview.md`](rvc-ggml/docs/technical_01_port_overview.md) | Inference port overview and feature comparison |
+| [`rvc-train-ggml/docs/usage_guide.md`](rvc-train-ggml/docs/usage_guide.md) | Full training workflow guide |
+| [`rvc-train-ggml/docs/numbers_handbook.md`](rvc-train-ggml/docs/numbers_handbook.md) | Reading the numbers in training parameters/logs |
+| [`rvc-train-ggml/docs/architecture.md`](rvc-train-ggml/docs/architecture.md) | Training-side architecture, data flow, GGUF schema, cache format |
 
-## 兼容性说明
+## Compatibility notes
 
-- 部分旧 Intel 驱动在量化模型多次图执行时整数点积路径有缺陷（NaN/全零），程序默认规避，
-  可用 `RVC_VK_ENABLE_INTDOT=1` 恢复；fp16 计算路径默认同样禁用（`RVC_VK_ENABLE_F16=1` 恢复）。
-- 官方 ggml 的 Vulkan 矩阵乘在 N 维超限时（长音频 / 48kHz 模型）会触发
-  `maxComputeWorkGroupCount` 断言——本项目补丁已修复，FetchContent 路径自动应用。
-- 训练侧自 train.cpp v0.4.0 起，Vulkan 计算缓冲默认优先 device-local（独显真显存 +
-  共享 staging / 可映射 device-local / host-visible 回退）；旧驱动或排查时可设
-  `TRC_VK_HOST_MEMORY=1` 回退 host-visible。
-- 长时间训练建议设 `TRC_VK_CHUNK_NODES=64`（分批提交，缓解部分独显驱动的 TDR /
-  设备丢失）；`TRC_OPT_HOST=1` 仅用于强制主机优化器做 A/B 对比。
+- Some older Intel drivers have a defective integer dot-product path (NaN/all-zero) when a quantized model's graph is executed repeatedly; the program avoids it by default, and it can be restored with `RVC_VK_ENABLE_INTDOT=1`; the fp16 compute path is likewise disabled by default (`RVC_VK_ENABLE_F16=1` to restore).
+- Official ggml's Vulkan matrix multiply trips the `maxComputeWorkGroupCount` assertion when the N dimension exceeds the limit (long audio / 48 kHz models) — this project's patch fixes it, and the FetchContent path applies it automatically.
+- On the training side, since train.cpp v0.4.0, Vulkan compute buffers prefer device-local by default (true VRAM on discrete GPUs + shared staging / mappable device-local / host-visible fallback); with older drivers or for troubleshooting, set `TRC_VK_HOST_MEMORY=1` to fall back to host-visible.
+- For long training runs it is recommended to set `TRC_VK_CHUNK_NODES=64` (batched submission, mitigating TDR / device loss on some discrete-GPU drivers); `TRC_OPT_HOST=1` is only for forcing the host optimizer in A/B comparisons.
 
 ## License
 
-本项目以 [MIT](LICENSE) 协议开源。
+This project is open source under the [MIT](LICENSE) license.
 
-本项目依赖/参考了以下优秀的开源项目，各自许可证见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)：
+It depends on / references the following excellent open-source projects; see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for their respective licenses:
 
-- [ggml](https://github.com/ggml-org/ggml)（MIT）—— 推理后端
-- [train.cpp](https://github.com/Chui-Las/train.cpp)（MIT）—— C++ 深度学习训练库（v0.4.0，submodule）
-- [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI)（MIT）—— 语义基准与模型生态
-- [dr_wav](https://github.com/mackron/dr_libs)（MIT-0 / Unlicense）与
-  [pocketfft](https://github.com/mreineck/pocketfft)（BSD-3）—— vendored 单头库
-
+- [ggml](https://github.com/ggml-org/ggml) (MIT) — inference backend
+- [train.cpp](https://github.com/Chui-Las/train.cpp) (MIT) — C++ deep-learning training library (v0.4.0, submodule)
+- [RVC](https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI) (MIT) — semantic baseline and model ecosystem
+- [dr_wav](https://github.com/mackron/dr_libs) (MIT-0 / Unlicense) and
+  [pocketfft](https://github.com/mreineck/pocketfft) (BSD-3) — vendored single-header libraries

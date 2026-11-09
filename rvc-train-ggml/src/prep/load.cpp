@@ -1,4 +1,4 @@
-// load.cpp —— M4-1 音频载入与重采样实现
+// load.cpp -- M4-1 audio loading and resampling implementation
 
 #include "prep/load.h"
 
@@ -6,8 +6,8 @@
 #include <cstdio>
 #include <fstream>
 
-#include "audio/audio_io.h"  // rvc_core 公共头（load_wav）
-#include "prep/resample.h"   // 自研 sinc 重采样（rvc resample_mono 对 44.1k→40k 失真）
+#include "audio/audio_io.h"  // rvc_core public header (load_wav)
+#include "prep/resample.h"   // in-house sinc resampler (rvc resample_mono distorts 44.1k->40k)
 
 namespace rvc_train::prep {
 
@@ -36,20 +36,20 @@ bool load_wav_mono(const std::string& path, int target_sr, MonoAudio* out, std::
         const AudioData audio = load_wav(path);
         if (audio.total_samples == 0 || audio.num_channels <= 0) {
             if (err) {
-                *err = "WAV 为空或声道数无效: " + path;
+                *err = "WAV is empty or has an invalid channel count: " + path;
             }
             return false;
         }
         if (audio.num_channels > 2) {
             if (err) {
-                *err = "暂不支持 >2 声道 WAV（请先转单声道/立体声）: " + path;
+                *err = "WAV with >2 channels is not supported yet (convert to mono/stereo first): " + path;
             }
             return false;
         }
 
-        // 下混到 double，系数与 ffmpeg swresample 默认矩阵一致（M4-1 实测）：
-        //   单声道 → 1.0；立体声 → 1/sqrt(2)（能量归一，非 1/2 平均；
-        //   用 1/2 会整体差 0.707 倍，与官方 0_gt 产生 ~30% 幅度偏差）
+        // Downmix to double; coefficients match ffmpeg swresample's default matrix (M4-1 measurements):
+        //   mono -> 1.0; stereo -> 1/sqrt(2) (energy normalization, not 1/2 averaging;
+        //   using 1/2 scales everything by 0.707, producing ~30% amplitude deviation from the official 0_gt)
         const int ch = audio.num_channels;
         const double scale = (ch == 1) ? 1.0 : 1.0 / std::sqrt(2.0);
         std::vector<double> mono(static_cast<std::size_t>(audio.total_samples), 0.0);
@@ -70,7 +70,7 @@ bool load_wav_mono(const std::string& path, int target_sr, MonoAudio* out, std::
         return true;
     } catch (const std::exception& e) {
         if (err) {
-            *err = std::string("读取 WAV 失败: ") + e.what();
+            *err = std::string("failed to read WAV: ") + e.what();
         }
         return false;
     }
@@ -80,14 +80,14 @@ bool load_raw_f32_mono(const std::string& path, int sample_rate, MonoAudio* out,
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) {
         if (err) {
-            *err = "无法打开 F32 raw: " + path;
+            *err = "cannot open F32 raw: " + path;
         }
         return false;
     }
     const std::streamoff size = f.tellg();
     if (size <= 0 || size % 4 != 0) {
         if (err) {
-            *err = "F32 raw 大小无效（需 4 字节对齐且非空）: " + path;
+            *err = "invalid F32 raw size (must be non-empty and 4-byte aligned): " + path;
         }
         return false;
     }
@@ -96,7 +96,7 @@ bool load_raw_f32_mono(const std::string& path, int sample_rate, MonoAudio* out,
     f.read(reinterpret_cast<char*>(f32.data()), size);
     if (!f) {
         if (err) {
-            *err = "F32 raw 读取失败: " + path;
+            *err = "F32 raw read failed: " + path;
         }
         return false;
     }
@@ -115,7 +115,7 @@ bool write_raw_f32(const std::string& path, const float* data, std::size_t count
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
         if (err) {
-            *err = "无法写入: " + path;
+            *err = "cannot write: " + path;
         }
         return false;
     }
@@ -125,7 +125,7 @@ bool write_raw_f32(const std::string& path, const float* data, std::size_t count
     }
     if (!f) {
         if (err) {
-            *err = "写入失败: " + path;
+            *err = "write failed: " + path;
         }
         return false;
     }
@@ -140,7 +140,7 @@ bool write_raw_i32(const std::string& path, const int32_t* data, std::size_t cou
     std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) {
         if (err) {
-            *err = "无法写入: " + path;
+            *err = "cannot write: " + path;
         }
         return false;
     }
@@ -150,7 +150,7 @@ bool write_raw_i32(const std::string& path, const int32_t* data, std::size_t cou
     }
     if (!f) {
         if (err) {
-            *err = "写入失败: " + path;
+            *err = "write failed: " + path;
         }
         return false;
     }

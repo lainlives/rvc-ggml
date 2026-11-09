@@ -1,4 +1,4 @@
-// RVC-Train-GGML - RVC 模型参数容器实现（src/model/model.cpp）
+// RVC-Train-GGML - RVC model parameter container implementation (src/model/model.cpp)
 #include "model/model.h"
 
 #include <array>
@@ -15,7 +15,7 @@ void set_err(std::string* err, const std::string& msg) {
     }
 }
 
-// 一级模块名：取名字中第一个 '.' 之前的部分（emb_g.weight → emb_g）
+// Top-level module name: the part of the name before the first '.' (emb_g.weight -> emb_g)
 std::string top_group(const char* name) {
     const char* dot = std::strchr(name, '.');
     if (dot == nullptr) {
@@ -38,25 +38,25 @@ bool same_ne(const std::array<int64_t, 4>& a, const traincpp::Tensor* t) {
 traincpp::Tensor* build_param(traincpp::Context* ctx, const TrainWeights& weights,
                               const char* name, std::string* err) {
     if (name == nullptr || name[0] == '\0') {
-        set_err(err, "空张量名");
+        set_err(err, "empty tensor name");
         return nullptr;
     }
     if (!weights.has(name)) {
-        set_err(err, std::string("缺失张量: ") + name);
+        set_err(err, std::string("missing tensor: ") + name);
         return nullptr;
     }
     std::array<int64_t, 4> ne{1, 1, 1, 1};
     if (!weights.tensor_ne(name, &ne)) {
-        set_err(err, std::string("读取张量形状失败: ") + name);
+        set_err(err, std::string("failed to read tensor shape: ") + name);
         return nullptr;
     }
-    traincpp::Tensor* t = weights.new_tensor(ctx, name);  // F32，形状来自文件
+    traincpp::Tensor* t = weights.new_tensor(ctx, name);  // F32, shape from the file
     if (t == nullptr) {
-        set_err(err, std::string("创建参数张量失败: ") + name);
+        set_err(err, std::string("failed to create parameter tensor: ") + name);
         return nullptr;
     }
     if (!same_ne(ne, t)) {
-        set_err(err, std::string("创建后形状不符: ") + name);
+        set_err(err, std::string("shape mismatch after creation: ") + name);
         return nullptr;
     }
     return t;
@@ -77,7 +77,7 @@ bool ModelParams::build_all(traincpp::Context* ctx, const TrainWeights& weights,
     for (int64_t i = 0; i < n; ++i) {
         const char* name = weights.tensor_name(i);
         if (name == nullptr) {
-            set_err(err, "张量名读取失败: index " + std::to_string(i));
+            set_err(err, "failed to read tensor name: index " + std::to_string(i));
             return false;
         }
         traincpp::Tensor* t = build_param(ctx, weights, name, err);
@@ -111,7 +111,7 @@ bool ModelParams::build_all(traincpp::Context* ctx, const TrainWeights& weights,
         exp.name = name;
         std::array<int64_t, 4> ne{1, 1, 1, 1};
         if (!weights.tensor_ne(name, &ne)) {
-            set_err(err, std::string("读取张量形状失败: ") + name);
+            set_err(err, std::string("failed to read tensor shape: ") + name);
             return false;
         }
         exp.ne = ne;

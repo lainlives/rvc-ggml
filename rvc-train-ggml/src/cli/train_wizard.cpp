@@ -1,8 +1,8 @@
-// RVC-Train-GGML - 交互式训练向导实现（src/cli/train_wizard.cpp）
+// RVC-Train-GGML - interactive training wizard implementation (src/cli/train_wizard.cpp)
 //
-// 见 train_wizard.h 与 `交接说明` §4.11/§4.13。支持微调与从零（M7-2）两条分支。
-// M8-1a：设备选择列表化（traincpp device API）+ 大配置 Q31 警告。
-// M8-1b：数据入口双模式——已有缓存目录 / 原始音频目录（spawn rvc-prep.exe 子进程预处理）。
+// See train_wizard.h and `handover.md` §4.11/§4.13. Supports both finetune and from-scratch (M7-2) branches.
+// M8-1a: device selection in list form (traincpp device API) + Q31 large-config warning.
+// M8-1b: dual-mode data entry - existing cache directory / raw audio directory (spawn an rvc-prep.exe subprocess to preprocess).
 #include "cli/train_wizard.h"
 
 #include "prep/cache.h"
@@ -42,7 +42,7 @@ std::string trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
-// 读取一行答案；流结束返回 false。
+// Read one answer line; returns false at end of stream.
 bool read_answer(std::istream& in, std::string* out) {
     if (!std::getline(in, *out)) {
         return false;
@@ -51,7 +51,7 @@ bool read_answer(std::istream& in, std::string* out) {
     return true;
 }
 
-// 打印提示并读一行：空行/EOF 采用默认值。
+// Print a prompt and read one line: blank line/EOF uses the default.
 std::string ask(const std::string& label, const std::string& def, std::istream& in,
                 std::ostream& out, bool* eof) {
     out << label;
@@ -80,7 +80,7 @@ std::string ask_nonempty(const std::string& label, const std::string& def, std::
         if (*eof) {
             return s;
         }
-        out << "  不能为空，请重试。\n";
+        out << "  Cannot be empty, please retry.\n";
     }
 }
 
@@ -96,7 +96,7 @@ std::string ask_existing_file(const std::string& label, const std::string& def, 
         if (*eof) {
             return s;
         }
-        out << "  文件不存在: " << s << "，请重试。\n";
+        out << "  File does not exist: " << s << ", please retry.\n";
         cur = s;
     }
 }
@@ -115,12 +115,12 @@ std::string ask_cache_dir(const std::string& label, const std::string& def, std:
         if (*eof) {
             return s;
         }
-        out << "  缓存目录无效（需存在且含 dataset.json）: " << s << "，请重试。\n";
+        out << "  Invalid cache directory (must exist and contain dataset.json): " << s << ", please retry.\n";
         cur = s;
     }
 }
 
-// M8-1b：已存在的目录（输入音频目录等）。
+// M8-1b: existing directory (input audio directory, etc.).
 std::string ask_existing_dir(const std::string& label, const std::string& def, std::istream& in,
                              std::ostream& out, bool* eof) {
     std::string cur = def;
@@ -133,12 +133,12 @@ std::string ask_existing_dir(const std::string& label, const std::string& def, s
         if (*eof) {
             return s;
         }
-        out << "  目录不存在: " << s << "，请重试。\n";
+        out << "  Directory does not exist: " << s << ", please retry.\n";
         cur = s;
     }
 }
 
-// M8-1b：可选文件——空行表示留空（如 RMVPE 留空则跳过 f0）；非空必须是已存在文件。
+// M8-1b: optional file - blank line means leave empty (e.g. an empty RMVPE skips f0); non-empty must be an existing file.
 std::string ask_optional_file(const std::string& label, const std::string& def, std::istream& in,
                               std::ostream& out, bool* eof) {
     std::string cur = def;
@@ -151,7 +151,7 @@ std::string ask_optional_file(const std::string& label, const std::string& def, 
         if (std::filesystem::is_regular_file(s, ec)) {
             return s;
         }
-        out << "  文件不存在: " << s << "，请重试（留空请直接回车）。\n";
+        out << "  File does not exist: " << s << ", please retry (press Enter to leave empty).\n";
         cur = s;
     }
 }
@@ -170,12 +170,12 @@ int64_t ask_int(const std::string& label, int64_t def, int64_t min_v, int64_t ma
         } else if (*eof) {
             return cur;
         } else {
-            return cur;  // 空行采用默认（已展示）
+            return cur;  // blank line uses the default (already displayed)
         }
         if (*eof) {
             return cur;
         }
-        out << "  请输入 " << min_v << ".." << max_v << " 范围内的整数，请重试。\n";
+        out << "  Please enter an integer in range " << min_v << ".." << max_v << ", please retry.\n";
         cur = def;
     }
 }
@@ -199,29 +199,29 @@ float ask_float(const std::string& label, float def, std::istream& in, std::ostr
         if (*eof) {
             return cur;
         }
-        out << "  请输入 > 0 的数值，请重试。\n";
+        out << "  Please enter a value > 0, please retry.\n";
     }
 }
 
 void print_summary(const TrainerConfig& c, std::ostream& out) {
-    out << "\n---- 配置摘要 ----\n";
-    out << "  数据缓存   : " << c.exp_dir << "\n";
+    out << "\n---- Config summary ----\n";
+    out << "  Data cache   : " << c.exp_dir << "\n";
     if (c.scratch) {
-        out << "  模型来源   : 从零训练（按配置随机初始化 G/D）\n";
+        out << "  Model source : train from scratch (randomly initialize G/D per config)\n";
     } else {
-        out << "  预训练 G   : " << c.weights_g << "\n";
-        out << "  预训练 D   : " << c.weights_d << "\n";
+        out << "  Pretrained G : " << c.weights_g << "\n";
+        out << "  Pretrained D : " << c.weights_d << "\n";
     }
-    out << "  输出目录   : " << c.out_dir << "\n";
-    out << "  epochs     : " << (long long) c.epochs << "\n";
-    out << "  batch_size : " << (long long) c.batch_size << "\n";
-    out << "  bucket     : " << (long long) c.bucket << "\n";
-    out << "  disc_len   : " << (long long) c.disc_len << "（0=整段 segment_size）\n";
+    out << "  Output dir   : " << c.out_dir << "\n";
+    out << "  epochs       : " << (long long) c.epochs << "\n";
+    out << "  batch_size   : " << (long long) c.batch_size << "\n";
+    out << "  bucket       : " << (long long) c.bucket << "\n";
+    out << "  disc_len     : " << (long long) c.disc_len << " (0=whole segment_size)\n";
     out << "  learning_rate: " << c.lr << "\n";
-    out << "  seed       : " << (long long) c.seed << "\n";
-    out << "  device     : " << (long long) c.device << "（-1=自动）\n";
+    out << "  seed         : " << (long long) c.seed << "\n";
+    out << "  device       : " << (long long) c.device << " (-1=auto)\n";
     if (!c.resume.empty()) {
-        out << "  续训自     : " << c.resume << "\n";
+        out << "  Resume from  : " << c.resume << "\n";
     }
     out << "------------------\n";
 }
@@ -230,7 +230,7 @@ bool confirm_yes(const std::string& yn) {
     return yn == "y" || yn == "Y" || yn == "yes" || yn == "YES" || yn == "是";
 }
 
-// M8-1b：本进程 exe 所在目录（用于定位同目录的 rvc-prep.exe）。
+// M8-1b: directory of this process's exe (used to locate rvc-prep.exe in the same directory).
 std::string current_exe_dir() {
     wchar_t buf[MAX_PATH];
     const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
@@ -243,7 +243,7 @@ std::string current_exe_dir() {
     return std::filesystem::is_directory(dir, ec) ? dir.string() : std::string();
 }
 
-// M8-1b：目录 + 文件名拼接（Windows 风格）。
+// M8-1b: concatenate directory + file name (Windows style).
 std::string join_simple(const std::string& dir, const std::string& name) {
     if (dir.empty()) {
         return name;
@@ -255,7 +255,7 @@ std::string join_simple(const std::string& dir, const std::string& name) {
     return dir + "\\" + name;
 }
 
-// M8-1b：定位 rvc-prep.exe——优先本 exe 同目录，其次工作目录；找不到返回空。
+// M8-1b: locate rvc-prep.exe - prefer this exe's directory, then the working directory; return empty if not found.
 std::string find_rvc_prep_exe(std::ostream& out) {
     std::error_code ec;
     const std::string candidates[2] = {
@@ -267,17 +267,17 @@ std::string find_rvc_prep_exe(std::ostream& out) {
             return c;
         }
     }
-    out << "  未找到 rvc-prep.exe（已尝试本程序同目录与当前目录）。\n";
+    out << "  rvc-prep.exe not found (tried this program's directory and the current directory).\n";
     return {};
 }
 
-// M8-1b：拼接引号包裹的命令片段。
+// M8-1b: build a quoted command fragment.
 std::string quoted_arg(const std::string& s) {
     return "\"" + s + "\"";
 }
 
-// M8-1c：在输出目录找最新可续训 checkpoint（train*.ckpt.gguf 且旁挂 .meta.json 存在）。
-// 按文件修改时间取最新；没有返回空。
+// M8-1c: find the newest resumable checkpoint in the output directory (train*.ckpt.gguf with a sibling .meta.json present).
+// pick the newest by file modification time; return empty if none.
 std::string find_latest_checkpoint(const std::string& out_dir) {
     std::error_code ec;
     const std::filesystem::path dir(out_dir);
@@ -296,7 +296,7 @@ std::string find_latest_checkpoint(const std::string& out_dir) {
             name.rfind(".ckpt.gguf") != name.size() - std::string(".ckpt.gguf").size()) {
             continue;
         }
-        // meta 旁挂命名与 resume_meta_path_for 一致：<ckpt>.gguf → <ckpt>.meta.json
+        // sibling meta naming matches resume_meta_path_for: <ckpt>.gguf -> <ckpt>.meta.json
         const std::string meta_name = name.substr(0, name.size() - std::string(".gguf").size()) +
                                       ".meta.json";
         if (!std::filesystem::is_regular_file(dir / meta_name, ec)) {
@@ -311,9 +311,9 @@ std::string find_latest_checkpoint(const std::string& out_dir) {
     return best.empty() ? std::string() : best.string();
 }
 
-// M8-1b：spawn rvc-prep.exe 子进程执行预处理（两个 Vulkan 后端分属不同进程，符合隔离规则）。
-// 走 CreateProcessW（避免 cmd 的引号解析问题，且原生支持中文路径）；继承控制台实时输出。
-// 退出码 0 且缓存 dataset.json 出现才视为成功。
+// M8-1b: spawn an rvc-prep.exe subprocess to run preprocessing (the two Vulkan backends live in separate processes, per the isolation rule).
+// use CreateProcessW (avoids cmd quote-parsing issues and natively supports non-ASCII paths); inherits the console for live output.
+// success requires exit code 0 and a dataset.json appearing in the cache.
 bool run_prep_subprocess(const std::string& exe, const std::string& input, int sr,
                          const std::string& version, const std::string& rmvpe,
                          const std::string& hubert, const std::string& exp_dir,
@@ -327,14 +327,14 @@ bool run_prep_subprocess(const std::string& exe, const std::string& input, int s
     if (!hubert.empty()) {
         cmd += " --hubert " + quoted_arg(hubert);
     }
-    std::printf("[rvc-train] 正在运行预处理（可能耗时较长）:\n  %s\n", cmd.c_str());
+    std::printf("[rvc-train] running preprocessing (may take a while):\n  %s\n", cmd.c_str());
     std::fflush(stdout);
 
-    // UTF-8 → UTF-16（命令行含中文路径时必须）
+    // UTF-8 -> UTF-16 (required when the command line contains non-ASCII paths)
     const int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
     if (wlen <= 0) {
         if (err != nullptr) {
-            *err = "命令行转宽字符失败";
+            *err = "failed to convert the command line to wide chars";
         }
         return false;
     }
@@ -347,7 +347,7 @@ bool run_prep_subprocess(const std::string& exe, const std::string& input, int s
     if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
                         &pi)) {
         if (err != nullptr) {
-            *err = "启动 rvc-prep.exe 失败（GetLastError=" + std::to_string(GetLastError()) + "）";
+            *err = "failed to start rvc-prep.exe (GetLastError=" + std::to_string(GetLastError()) + ")";
         }
         return false;
     }
@@ -358,14 +358,14 @@ bool run_prep_subprocess(const std::string& exe, const std::string& input, int s
     CloseHandle(pi.hProcess);
     if (exit_code != 0) {
         if (err != nullptr) {
-            *err = "rvc-prep 退出码 " + std::to_string(exit_code) + "（预处理失败，详见上方日志）";
+            *err = "rvc-prep exit code " + std::to_string(exit_code) + " (preprocessing failed, see the log above)";
         }
         return false;
     }
     std::error_code ec;
     if (!std::filesystem::is_regular_file(std::filesystem::path(exp_dir) / "dataset.json", ec)) {
         if (err != nullptr) {
-            *err = "预处理命令成功但未生成 " + exp_dir + "\\dataset.json";
+            *err = "preprocessing command succeeded but did not produce " + exp_dir + "\\dataset.json";
         }
         return false;
     }
@@ -383,32 +383,32 @@ const char* wizard_device_type_name(traincpp::DeviceType t) {
     return "?";
 }
 
-// M8-1a：向导内打印 traincpp 设备列表（含显存/统一内存），供设备选择参考。
+// M8-1a: print the traincpp device list (with VRAM/unified memory) in the wizard as a reference for device selection.
 void print_wizard_devices(std::ostream& out) {
     const size_t n = traincpp::device_count();
-    out << "\n可用训练设备（traincpp）:\n";
+    out << "\nAvailable training devices (traincpp):\n";
     if (n == 0) {
-        out << "  （未枚举到任何设备）\n";
+        out << "  (no devices enumerated)\n";
         return;
     }
     for (size_t i = 0; i < n; ++i) {
         const traincpp::Device* d = traincpp::device_get(i);
         const traincpp::DeviceProps& p = d->props();
         out << "  [" << i << "] " << p.name << " | " << p.description << " | "
-            << wizard_device_type_name(p.type) << " | 空闲 "
-            << (double) p.memory_free / (1024.0 * 1024.0) << " MiB / 共 "
+            << wizard_device_type_name(p.type) << " | free "
+            << (double) p.memory_free / (1024.0 * 1024.0) << " MiB / total "
             << (double) p.memory_total / (1024.0 * 1024.0) << " MiB"
-            << (p.unified_memory ? " | 统一内存" : "") << "\n";
+            << (p.unified_memory ? " | unified memory" : "") << "\n";
     }
-    out << "  -1 = 自动（GPU → IGPU → CPU）\n";
+    out << "  -1 = auto (GPU -> IGPU -> CPU)\n";
 }
 
-// M8-1a：Q31 口径——大 bucket/大 disc_len 的实测代价警告（用户独显 7 小时仅 5 epoch 后崩溃）。
+// M8-1a: Q31 framing - measured-cost warning for large bucket/large disc_len (a user's discrete GPU crashed after only 5 epochs in 7 hours).
 void warn_large_config(const TrainerConfig& c, std::ostream& out) {
     if (c.bucket > 384 || c.disc_len > 6400) {
-        out << "  警告: 大 bucket/disc_len 配置代价极高——独显实测 B=1/T=384/disc=12800 "
-               "7 小时仅 5 epoch 后崩溃。\n";
-        out << "        推荐 bucket<=300、disc_len<=4800（同机实测 70+ epoch 稳定）。\n";
+        out << "  Warning: large bucket/disc_len configs are extremely costly - on a discrete GPU the measured "
+               "B=1/T=384/disc=12800 config crashed after only 5 epochs in 7 hours.\n";
+        out << "        Recommended: bucket<=300, disc_len<=4800 (measured stable for 70+ epochs on the same machine).\n";
     }
 }
 
@@ -417,41 +417,41 @@ void warn_large_config(const TrainerConfig& c, std::ostream& out) {
 bool run_train_wizard(std::istream& in, std::ostream& out, TrainerConfig* cfg, std::string* err) {
     if (cfg == nullptr) {
         if (err != nullptr) {
-            *err = "run_train_wizard: cfg 为空";
+            *err = "run_train_wizard: cfg is null";
         }
         return false;
     }
     bool eof = false;
-    out << "==== RVC 训练向导（微调 / 从零；M8）====\n";
-    out << "直接回车采用 [方括号] 中的默认值。\n\n";
+    out << "==== RVC training wizard (finetune / from scratch; M8) ====\n";
+    out << "Press Enter to accept the default shown in [brackets].\n\n";
 
-    // M8-1b：数据入口双模式。
-    const int64_t entry = ask_int("数据入口（1=已有缓存目录 2=原始音频目录，先预处理）", 1, 1, 2,
+    // M8-1b: dual-mode data entry.
+    const int64_t entry = ask_int("Data entry (1=existing cache directory 2=raw audio directory, preprocess first)", 1, 1, 2,
                                   in, out, &eof);
     if (entry == 2) {
         const std::string input_dir =
-            ask_existing_dir("原始音频目录（wav 文件）", "", in, out, &eof);
-        const int64_t tgt = ask_int("预处理目标（1=v1-40k / 2=v2-48k）", 1, 1, 2, in, out, &eof);
+            ask_existing_dir("Raw audio directory (wav files)", "", in, out, &eof);
+        const int64_t tgt = ask_int("Preprocessing target (1=v1-40k / 2=v2-48k)", 1, 1, 2, in, out, &eof);
         const char* version = tgt == 2 ? "v2" : "v1";
         const int sr = tgt == 2 ? 48000 : 40000;
         const std::string rmvpe =
-            ask_optional_file("RMVPE 权重路径（回车跳过 f0；训练建议提供）", "", in, out, &eof);
+            ask_optional_file("RMVPE weights path (press Enter to skip f0; recommended for training)", "", in, out, &eof);
         const std::string hubert =
-            ask_existing_file("HuBERT 权重路径（特征提取，训练必需）", "", in, out, &eof);
+            ask_existing_file("HuBERT weights path (feature extraction, required for training)", "", in, out, &eof);
         const std::string exp_def = tgt == 2 ? std::string("work/cache_auto_48k")
                                              : std::string("work/cache_auto_40k");
         const std::string exp_out =
-            ask_nonempty("预处理缓存输出目录", exp_def, in, out, &eof);
+            ask_nonempty("Preprocessing cache output directory", exp_def, in, out, &eof);
         if (eof) {
             if (err != nullptr) {
-                *err = "向导：输入流结束";
+                *err = "wizard: end of input stream";
             }
             return false;
         }
         const std::string exe = find_rvc_prep_exe(out);
         if (exe.empty()) {
             if (err != nullptr) {
-                *err = "未找到 rvc-prep.exe；请手动执行（或将其放到本程序同目录后重试）:\n"
+                *err = "rvc-prep.exe not found; run it manually (or put it in this program's directory and retry):\n"
                        "  rvc-prep --input \"" + input_dir + "\" --sr " + std::to_string(sr) +
                        " --version " + version + " --exp \"" + exp_out + "\"" +
                        (rmvpe.empty() ? "" : " --rmvpe \"" + rmvpe + "\"") +
@@ -466,108 +466,108 @@ bool run_train_wizard(std::istream& in, std::ostream& out, TrainerConfig* cfg, s
             }
             return false;
         }
-        out << "预处理完成: " << exp_out << "\n\n";
+        out << "Preprocessing complete: " << exp_out << "\n\n";
         cfg->exp_dir = exp_out;
     } else {
-        cfg->exp_dir = ask_cache_dir("数据缓存目录（rvc-prep --exp 产物）", cfg->exp_dir, in, out,
+        cfg->exp_dir = ask_cache_dir("Data cache directory (rvc-prep --exp output)", cfg->exp_dir, in, out,
                                      &eof);
     }
 
-    const int64_t src = ask_int("模型来源（1=预训练微调 2=从零训练）", cfg->scratch ? 2 : 1, 1, 2, in,
+    const int64_t src = ask_int("Model source (1=pretrained finetune 2=train from scratch)", cfg->scratch ? 2 : 1, 1, 2, in,
                                 out, &eof);
     if (src == 2) {
         cfg->scratch = true;
     } else {
         cfg->scratch = false;
-        cfg->weights_g = ask_existing_file("预训练生成器 G（训练态 GGUF）", cfg->weights_g, in, out, &eof);
-        cfg->weights_d = ask_existing_file("预训练判别器 D（训练态 GGUF）", cfg->weights_d, in, out, &eof);
+        cfg->weights_g = ask_existing_file("Pretrained generator G (training-state GGUF)", cfg->weights_g, in, out, &eof);
+        cfg->weights_d = ask_existing_file("Pretrained discriminator D (training-state GGUF)", cfg->weights_d, in, out, &eof);
     }
 
     const std::string out_def = cfg->out_dir.empty() ? std::string("work/train_out") : cfg->out_dir;
-    cfg->out_dir = ask_nonempty("输出目录（日志/checkpoint/导出）", out_def, in, out, &eof);
+    cfg->out_dir = ask_nonempty("Output directory (logs/checkpoints/exports)", out_def, in, out, &eof);
 
-    // M8-1c：续训入口——输出目录已有 checkpoint（含 meta）时询问是否续训。
+    // M8-1c: resume entry - ask whether to resume when the output directory already has a checkpoint (with meta).
     if (cfg->resume.empty()) {
         const std::string ckpt = find_latest_checkpoint(cfg->out_dir);
         if (!ckpt.empty()) {
-            out << "  检测到已有 checkpoint: " << ckpt << "\n";
-            const std::string yn = ask("是否从该 checkpoint 续训? (y/N)", "n", in, out, &eof);
+            out << "  Found an existing checkpoint: " << ckpt << "\n";
+            const std::string yn = ask("Resume from this checkpoint? (y/N)", "n", in, out, &eof);
             if (confirm_yes(yn)) {
                 cfg->resume = ckpt;
-                out << "  注意: 续训要求 batch/bucket/seed/grad_accum/lr 与原训练一致，"
-                       "且数据缓存未增删（不一致将被拒绝）。\n";
+                out << "  Note: resume requires batch/bucket/seed/grad_accum/lr to match the original training "
+                       "and the data cache to be unchanged (a mismatch is rejected).\n";
             }
         }
     }
 
-    cfg->epochs = ask_int("训练 epoch 数", cfg->epochs > 0 ? cfg->epochs : 1, 1, 1000000000, in,
+    cfg->epochs = ask_int("Number of training epochs", cfg->epochs > 0 ? cfg->epochs : 1, 1, 1000000000, in,
                           out, &eof);
     cfg->batch_size = ask_int("batch_size", cfg->batch_size > 0 ? cfg->batch_size : 1, 1, 1024, in,
                               out, &eof);
     const int64_t bucket_def = cfg->bucket > 0 ? cfg->bucket : cfg->segment_frames;
-    cfg->bucket = ask_int("bucket（图 T）", bucket_def, cfg->segment_frames, 1000000, in, out, &eof);
-    cfg->disc_len = ask_int("disc_len（0=整段 segment_size）", cfg->disc_len, 0, 100000000, in, out,
+    cfg->bucket = ask_int("bucket (graph T)", bucket_def, cfg->segment_frames, 1000000, in, out, &eof);
+    cfg->disc_len = ask_int("disc_len (0=whole segment_size)", cfg->disc_len, 0, 100000000, in, out,
                             &eof);
     warn_large_config(*cfg, out);
     cfg->lr = ask_float("learning_rate", cfg->lr, in, out, &eof);
-    cfg->seed = ask_int("随机种子", cfg->seed, 0, 2147483647, in, out, &eof);
+    cfg->seed = ask_int("Random seed", cfg->seed, 0, 2147483647, in, out, &eof);
 
     print_wizard_devices(out);
     const int64_t dev_max = traincpp::device_count() > 0
                                 ? (int64_t) traincpp::device_count() - 1
                                 : -1;
-    cfg->device = ask_int("训练设备下标（-1=自动）", cfg->device, -1, dev_max > 1024 ? 1024 : dev_max,
+    cfg->device = ask_int("Training device index (-1=auto)", cfg->device, -1, dev_max > 1024 ? 1024 : dev_max,
                           in, out, &eof);
 
-    // M8-1c：高级参数（默认折叠，直接回车跳过）。
-    const std::string adv = ask("配置高级参数? (y/N)", "n", in, out, &eof);
+    // M8-1c: advanced parameters (collapsed by default; press Enter to skip).
+    const std::string adv = ask("Configure advanced parameters? (y/N)", "n", in, out, &eof);
     if (confirm_yes(adv)) {
-        cfg->grad_accum = ask_int("grad_accum（梯度累积步数，1=关）", cfg->grad_accum > 0
+        cfg->grad_accum = ask_int("grad_accum (gradient accumulation steps, 1=off)", cfg->grad_accum > 0
                                                                       ? cfg->grad_accum
                                                                       : 1,
                                   1, 64, in, out, &eof);
-        cfg->save_interval = ask_int("save_interval（每 N epoch 存 checkpoint，0=仅收尾）",
+        cfg->save_interval = ask_int("save_interval (save a checkpoint every N epochs, 0=finalize only)",
                                      cfg->save_interval, 0, 1000000, in, out, &eof);
-        cfg->export_every = ask_int("export_every（每 N epoch 导出推理 GGUF，0=关）",
+        cfg->export_every = ask_int("export_every (export an inference GGUF every N epochs, 0=off)",
                                     cfg->export_every, 0, 1000000, in, out, &eof);
-        cfg->snapshot_keep = ask_int("snapshot_keep（epoch 快照保留数，0=全部保留）",
+        cfg->snapshot_keep = ask_int("snapshot_keep (epoch snapshots to keep, 0=keep all)",
                                      cfg->snapshot_keep, 0, 10000, in, out, &eof);
-        cfg->log_interval = ask_int("log_interval（每 N 优化步打日志）",
+        cfg->log_interval = ask_int("log_interval (log every N optimization steps)",
                                     cfg->log_interval > 0 ? cfg->log_interval : 50, 1, 1000000,
                                     in, out, &eof);
     }
 
-    // M8-1c：确认前校验增强——缓存版本/样本数/预计步数摘要 + 与模型配置的一致性提示。
+    // M8-1c: enhanced pre-confirmation checks - cache version/sample-count/estimated-steps summary + consistency hints against the model config.
     if (!cfg->exp_dir.empty()) {
         prep::CacheDataset ds;
         std::string cerr2;
         if (load_cache_index(cfg->exp_dir, &ds, &cerr2)) {
             const int64_t n = (int64_t) ds.samples.size();
-            out << "\n  缓存信息: " << n << " 样本 | 版本 " << ds.meta.version << " | sr "
+            out << "\n  Cache info: " << n << " samples | version " << ds.meta.version << " | sr "
                 << ds.meta.target_sr << "\n";
             const int64_t batch = cfg->batch_size > 0 ? cfg->batch_size : 1;
             const int64_t accum = cfg->grad_accum > 0 ? cfg->grad_accum : 1;
-            const int64_t micro = n / batch;      // 尾部丢弃
-            const int64_t steps = micro / accum;  // Trainer 以优化步计
-            out << "  预计: 约 " << steps << " 优化步/epoch（batch=" << batch << "×accum="
-                << accum << "；超 bucket 的样本会被跳过，实际可能更少）\n";
+            const int64_t micro = n / batch;      // drop the tail
+            const int64_t steps = micro / accum;  // Trainer counts optimization steps
+            out << "  Estimated: about " << steps << " optimization steps/epoch (batch=" << batch << "xaccum="
+                << accum << "; samples exceeding the bucket are skipped, so the actual count may be lower)\n";
             if (ds.meta.version != cfg->model_cfg.version ||
                 ds.meta.target_sr != cfg->model_cfg.sample_rate) {
-                out << "  警告: 缓存版本/采样率（" << ds.meta.version << "/"
-                    << ds.meta.target_sr << "）与模型配置（" << cfg->model_cfg.version << "/"
-                    << cfg->model_cfg.sample_rate << "）不一致——训练将被预检拒绝，"
-                    "请使用匹配的权重与 --config。\n";
+                out << "  Warning: cache version/sample rate (" << ds.meta.version << "/"
+                    << ds.meta.target_sr << ") does not match the model config (" << cfg->model_cfg.version << "/"
+                    << cfg->model_cfg.sample_rate << ") - training will be rejected by the preflight check, "
+                    "use matching weights and --config.\n";
             }
         } else {
-            out << "  注意: 读取缓存索引失败（" << cerr2 << "），训练启动时仍会再次校验。\n";
+            out << "  Note: failed to read the cache index (" << cerr2 << "); training startup will validate it again.\n";
         }
     }
 
     print_summary(*cfg, out);
-    const std::string yn = ask("确认并开始训练? (y/N)", "n", in, out, &eof);
+    const std::string yn = ask("Confirm and start training? (y/N)", "n", in, out, &eof);
     if (!confirm_yes(yn)) {
         if (err != nullptr) {
-            *err = "用户取消";
+            *err = "user cancelled";
         }
         return false;
     }
@@ -575,7 +575,7 @@ bool run_train_wizard(std::istream& in, std::ostream& out, TrainerConfig* cfg, s
     if (cfg->exp_dir.empty() || cfg->out_dir.empty() ||
         (!cfg->scratch && (cfg->weights_g.empty() || cfg->weights_d.empty()))) {
         if (err != nullptr) {
-            *err = "向导：关键路径为空（exp/pretrain_g/pretrain_d/out）";
+            *err = "wizard: a required path is empty (exp/pretrain_g/pretrain_d/out)";
         }
         return false;
     }
@@ -587,7 +587,7 @@ bool run_train_wizard_from_file(const std::string& answers_path, std::ostream& o
     std::ifstream f(answers_path);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法打开答案文件: " + answers_path;
+            *err = "cannot open answers file: " + answers_path;
         }
         return false;
     }
@@ -595,8 +595,8 @@ bool run_train_wizard_from_file(const std::string& answers_path, std::ostream& o
 }
 
 int run_train_wizard_selftest() {
-    // 固定答案（顺序同向导提问）：数据入口(1=已有缓存) / exp / 模型来源(1=微调) / G / D / out /
-    // epochs / batch / bucket / disc_len / lr / seed / device / 高级参数(n) / confirm
+    // Fixed answers (same order as the wizard questions): data entry(1=existing cache) / exp / model source(1=finetune) / G / D / out /
+    // epochs / batch / bucket / disc_len / lr / seed / device / advanced params(n) / confirm
     static const char* kAnswers =
         "1\n"
         "work/cache_v1\n"
@@ -614,7 +614,7 @@ int run_train_wizard_selftest() {
         "n\n"
         "y\n";
 
-    // "手写 JSON"黄金配置：与上面答案应产生完全等价的 TrainerConfig（其余字段取结构体默认值）。
+    // "Hand-written JSON" golden config: should produce a TrainerConfig fully equivalent to the answers above (remaining fields take struct defaults).
     static const char* kGoldenJson = R"json({
   "run": {
     "exp": "work/cache_v1",
@@ -658,25 +658,25 @@ int run_train_wizard_selftest() {
   "model": { "inter_channels": 192 }
 })json";
 
-    std::printf("[wizard-selftest] ==== 向导等价自检（G-7.1）====\n");
+    std::printf("[wizard-selftest] ==== wizard equivalence self-test (G-7.1) ====\n");
     TrainerConfig wiz;
     std::istringstream in(kAnswers);
     std::string err;
     if (!run_train_wizard(in, std::cout, &wiz, &err)) {
-        std::printf("[wizard-selftest] FAIL: 向导生成失败: %s\n", err.c_str());
+        std::printf("[wizard-selftest] FAIL: wizard generation failed: %s\n", err.c_str());
         return 1;
     }
     TrainerConfig gold;
     if (!trainer_config_from_json_text(kGoldenJson, &gold, &err)) {
-        std::printf("[wizard-selftest] FAIL: 手写 JSON 解析失败: %s\n", err.c_str());
+        std::printf("[wizard-selftest] FAIL: hand-written JSON parse failed: %s\n", err.c_str());
         return 1;
     }
     std::string diff;
     if (!trainer_config_equivalent(wiz, gold, &diff)) {
-        std::printf("[wizard-selftest] FAIL: 向导配置与手写 JSON 不等价 —— %s\n", diff.c_str());
+        std::printf("[wizard-selftest] FAIL: wizard config is not equivalent to hand-written JSON - %s\n", diff.c_str());
         return 1;
     }
-    std::printf("[wizard-selftest] PASS: 向导生成配置与手写 JSON 逐字段等价\n");
+    std::printf("[wizard-selftest] PASS: wizard-generated config is field-by-field equivalent to hand-written JSON\n");
     return 0;
 }
 

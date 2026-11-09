@@ -1,15 +1,15 @@
-// RVC-Train-GGML - M3-3 双图 G/D + 一步 AdamW 对拍实现（src/train/train_step_selftest.cpp）
+// RVC-Train-GGML - M3-3 dual-graph G/D + one AdamW step comparison-test implementation (src/train/train_step_selftest.cpp)
 //
-// 双图协议（交接说明 §4.7 C；架构设计 §5.1）：
-//   G 图（ctx_g）：synth 切片前向（include_full=false）→ D(冻结, 新建节点)
+// Dual-graph protocol (docs/handover.md §4.7 C; docs/architecture.md §5.1):
+//   G graph (ctx_g): synth slice forward (include_full=false) -> D (frozen, newly built nodes)
 //                  → LSGAN(G) + feature matching + 45·mel L1 + 1·KL
-//   D 图（ctx_d）：D(real)+D(fake)（独立 ctx，禁止复用 G 图节点）→ LSGAN(D)
-//   步序（对齐官方 81eed5e train.py:425-527）：先 D 步（用 pre-update y_hat.detach()），
-//   把更新后的 D 权重拷回 G 图 → G 图重算（D 冻结节点读到更新后的 D）→ G 步。
-// 内存：两个 ctx 各自 buffer_alloc_graph_tensors（图级 liveness 复用；Q18 处置已落地）。
-//   M5-0 起训练循环将改为**单 ctx 共享参数双图**（见 `交接说明` §4.9 C）；本 selftest 保持
-//   M3-3 已验证形态不变，作为 golden 基准。
-// 无泄漏断言：G 图反向展开后 D 参数无 grad_acc；D 步后 G 参数逐位不变；G 步后 D 参数逐位不变。
+//   D graph (ctx_d): D(real)+D(fake) (separate ctx; reusing G graph nodes is forbidden) -> LSGAN(D)
+//   Step order (aligned with official 81eed5e train.py:425-527): D step first (using pre-update y_hat.detach()),
+//   copy the updated D weights back into the G graph -> G graph recomputes (frozen D nodes read the updated D) -> G step.
+// Memory: each of the two ctxs calls buffer_alloc_graph_tensors (graph-level liveness reuse; the Q18 mitigation is in place).
+//   From M5-0 the training loop will switch to **single-ctx shared-parameter dual graphs** (see `docs/handover.md` §4.9 C); this selftest
+//   keeps the verified M3-3 form unchanged as the golden baseline.
+// Leak assertions: no grad_acc on D parameters after the G graph backward expansion; G parameters bit-unchanged after the D step; D parameters bit-unchanged after the G step.
 #include "train/train_step_selftest.h"
 
 #include "common/json.h"
@@ -57,11 +57,11 @@ using model::SynthOutputs;
 using model::TrainMeta;
 using model::TrainWeights;
 
-constexpr double kDeltaTol = 1e-4;  // ΔW 差值噪声下限（硬门/kink 判定见 M3-3 统计口径，非相对门）
-constexpr double kLossTol  = 1e-4;  // loss 相对门
-constexpr double kFwdTol   = 1e-4;  // 前向中间量相对门
+constexpr double kDeltaTol = 1e-4;  // ΔW difference noise floor (hard-gate/kink criteria follow the M3-3 statistical convention, not a relative gate)
+constexpr double kLossTol  = 1e-4;  // loss relative gate
+constexpr double kFwdTol   = 1e-4;  // forward intermediate relative gate
 
-// ---------------------------------------------------------------- 基础工具
+// ---------------------------------------------------------------- basic helpers
 
 std::string join_path(const std::string& dir, const std::string& file) {
     if (dir.empty()) {
@@ -78,7 +78,7 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) {
         if (err != nullptr) {
-            *err = "无法打开文件: " + path;
+            *err = "cannot open file: " + path;
         }
         return false;
     }
@@ -91,7 +91,7 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>* out, std::st
     }
     if (!f) {
         if (err != nullptr) {
-            *err = "读取失败: " + path;
+            *err = "read failed: " + path;
         }
         return false;
     }
@@ -121,7 +121,7 @@ void compare_f32(const float* ref, const float* got, int64_t n, CompareStat* st)
     st->rms_rel = rms_d / std::max(1e-12, rms_ref);
 }
 
-// ---------------------------------------------------------------- JSON 参数读取
+// ---------------------------------------------------------------- JSON parameter reading
 
 int64_t j_int(const common::JsonValue& o, const char* key, int64_t def) {
     const common::JsonValue* v = o.find(key);
@@ -149,14 +149,14 @@ void j_int_array(const common::JsonValue& o, const char* key, std::vector<int64_
     }
 }
 
-// ---------------------------------------------------------------- golden 文件读取
+// ---------------------------------------------------------------- golden file reading
 
 bool entry_bytes(const GoldenManifest& gm, const std::string& name, std::vector<uint8_t>* out,
                  std::string* err) {
     const GoldenTensor* gt = gm.find_tensor(name);
     if (gt == nullptr) {
         if (err != nullptr) {
-            *err = "golden 缺少条目: " + name;
+            *err = "golden missing entry: " + name;
         }
         return false;
     }
@@ -171,7 +171,7 @@ bool entry_f32(const GoldenManifest& gm, const std::string& name, std::vector<fl
     }
     if (bytes.size() % sizeof(float) != 0) {
         if (err != nullptr) {
-            *err = "文件大小非 F32 整数倍: " + name;
+            *err = "file size is not a multiple of F32: " + name;
         }
         return false;
     }
@@ -188,7 +188,7 @@ bool entry_i32(const GoldenManifest& gm, const std::string& name, std::vector<in
     }
     if (bytes.size() % sizeof(int32_t) != 0) {
         if (err != nullptr) {
-            *err = "文件大小非 I32 整数倍: " + name;
+            *err = "file size is not a multiple of I32: " + name;
         }
         return false;
     }
@@ -206,7 +206,7 @@ bool fill_tensor_from_entry(Tensor* t, const GoldenManifest& gm, const std::stri
     const size_t expect = (size_t) tensor_nelements(t) * tensor_element_size(t);
     if (bytes.size() != expect) {
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "输入文件大小不符: %s（%zu != %zu）", name.c_str(),
+        std::snprintf(buf, sizeof(buf), "input file size mismatch: %s (%zu != %zu)", name.c_str(),
                       bytes.size(), expect);
         if (err != nullptr) {
             *err = buf;
@@ -217,7 +217,7 @@ bool fill_tensor_from_entry(Tensor* t, const GoldenManifest& gm, const std::stri
     return true;
 }
 
-// ---------------------------------------------------------------- 参数快照 / ΔW
+// ---------------------------------------------------------------- parameter snapshots / ΔW
 
 void read_params(const ModelParams& params, std::map<std::string, std::vector<float>>* out) {
     for (Tensor* t : params.params().items) {
@@ -244,7 +244,7 @@ std::vector<float> make_delta(const std::vector<float>& after, const std::vector
     return d;
 }
 
-// ---------------------------------------------------------------- 配置装配
+// ---------------------------------------------------------------- config assembly
 
 SynthConfig synth_config_from_json(const common::JsonValue& p) {
     SynthConfig cfg;
@@ -300,26 +300,26 @@ MpdConfig disc_config_from_json(const common::JsonValue& p) {
     return cfg;
 }
 
-// ---------------------------------------------------------------- 主流程
+// ---------------------------------------------------------------- main flow
 
 int run_impl(const std::string& weights_g, const std::string& weights_d,
              const std::string& golden_dir, Device* dev) {
     if (dev == nullptr) {
-        std::printf("[train-step] 无可用设备\n");
+        std::printf("[train-step] no usable device\n");
         return 2;
     }
     std::printf("[train-step] golden=%s\n", golden_dir.c_str());
 
-    // ---------------- 打开权重与 golden ----------------
+    // ---------------- open weights and golden ----------------
     std::string err;
     TrainWeights* wg = TrainWeights::open(weights_g, &err);
     if (wg == nullptr) {
-        std::printf("[train-step] 打开 G 权重失败: %s\n", err.c_str());
+        std::printf("[train-step] failed to open G weights: %s\n", err.c_str());
         return 1;
     }
     TrainWeights* wd = TrainWeights::open(weights_d, &err);
     if (wd == nullptr) {
-        std::printf("[train-step] 打开 D 权重失败: %s\n", err.c_str());
+        std::printf("[train-step] failed to open D weights: %s\n", err.c_str());
         delete wg;
         return 1;
     }
@@ -329,7 +329,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     wd->read_meta(&meta_d);
     const ModelConfig cfg = ModelConfig::from_meta(meta_g);
     if (!cfg.validate(&err)) {
-        std::printf("[train-step] 配置校验失败: %s\n", err.c_str());
+        std::printf("[train-step] config validation failed: %s\n", err.c_str());
         delete wg;
         delete wd;
         return 1;
@@ -345,7 +345,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     const common::JsonValue* synth_json = gm.params.find("synth");
     const common::JsonValue* disc_json  = gm.params.find("disc");
     if (synth_json == nullptr || disc_json == nullptr) {
-        std::printf("[train-step] manifest.params.synth/disc 缺失（需重新生成 golden）\n");
+        std::printf("[train-step] manifest.params.synth/disc missing (regenerate the golden)\n");
         delete wg;
         delete wd;
         return 1;
@@ -360,7 +360,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     const int64_t seg      = scfg.segment_size;
     const int64_t total_slice = seg * upp;
     if (B != 1) {
-        std::printf("[train-step] 当前仅支持 B=1（golden batch=%lld）\n", (long long) B);
+        std::printf("[train-step] currently only B=1 is supported (golden batch=%lld)\n", (long long) B);
         delete wg;
         delete wd;
         return 2;
@@ -374,15 +374,15 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     opts.weight_decay = (float) j_num(gm.params, "weight_decay", 1e-2);
     const float c_mel = (float) j_num(gm.params, "c_mel", 45.0);
     const float c_kl  = (float) j_num(gm.params, "c_kl", 1.0);
-    std::printf("[train-step] 超参 lr=%.1e betas=(%.2f,%.2f) eps=%.1e wd=%.3f c_mel=%.1f "
+    std::printf("[train-step] hyperparameters lr=%.1e betas=(%.2f,%.2f) eps=%.1e wd=%.3f c_mel=%.1f "
                 "c_kl=%.1f disc_len=%lld\n",
                 (double) opts.lr, (double) opts.beta1, (double) opts.beta2, (double) opts.eps,
                 (double) opts.weight_decay, (double) c_mel, (double) c_kl, (long long) disc_len);
 
-    // ---------------- ctx_g：模型装配 + G 图 ----------------
+    // ---------------- ctx_g: model assembly + G graph ----------------
     Context* ctx_g = context_new(1u << 22);
     if (ctx_g == nullptr) {
-        std::printf("[train-step] ctx_g 创建失败\n");
+        std::printf("[train-step] ctx_g create failed\n");
         delete wg;
         delete wd;
         return 1;
@@ -390,7 +390,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     ModelParams g_params;
     ModelParams d_params_g;
     if (!g_params.build_all(ctx_g, *wg, &err) || !d_params_g.build_all(ctx_g, *wd, &err)) {
-        std::printf("[train-step] 建参失败: %s\n", err.c_str());
+        std::printf("[train-step] parameter building failed: %s\n", err.c_str());
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -398,7 +398,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     }
     MpdModule mpd_g;
     if (!model::mpd_load(d_params_g, dcfg, &mpd_g, &err)) {
-        std::printf("[train-step] D 装配失败: %s\n", err.c_str());
+        std::printf("[train-step] D assembly failed: %s\n", err.c_str());
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -406,21 +406,21 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     }
     SynthModules synth;
     if (!model::synth_load(g_params, scfg, &synth, &err)) {
-        std::printf("[train-step] G 装配失败: %s\n", err.c_str());
+        std::printf("[train-step] G assembly failed: %s\n", err.c_str());
         context_free(ctx_g);
         delete wg;
         delete wd;
         return 1;
     }
 
-    // 图内输入（仅创建图真正消费的叶子；lengths/pitchf/ids_slice/sine_noise_slice 走主机读取）
+    // In-graph inputs (create only the leaves the graph actually consumes; lengths/pitchf/ids_slice/sine_noise_slice are read on the host)
     static const char* kGraphInputs[] = {"phone", "pitch", "x_mask", "spec", "y_mask", "sid",
                                          "q_noise", "wave", "y_mel"};
     std::map<std::string, Tensor*> inputs;
     for (const char* name : kGraphInputs) {
         const GoldenTensor* gt = gm.find_tensor(name);
         if (gt == nullptr || !gt->is_input()) {
-            std::printf("[train-step] golden 缺少输入 %s\n", name);
+            std::printf("[train-step] golden missing input %s\n", name);
             context_free(ctx_g);
             delete wg;
             delete wd;
@@ -429,7 +429,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         const Type type = (gt->dtype == "i32") ? TYPE_I32 : TYPE_F32;
         Tensor* t = new_tensor_nd(ctx_g, type, gt->nd, gt->ne.data());
         if (t == nullptr) {
-            std::printf("[train-step] 创建输入失败: %s\n", name);
+            std::printf("[train-step] failed to create input: %s\n", name);
             context_free(ctx_g);
             delete wg;
             delete wd;
@@ -439,14 +439,14 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         inputs[name] = t;
     }
 
-    // 叶子（分配后由 prepare 填充）
+    // Leaves (filled by prepare after allocation)
     Tensor* attn_valid = new_tensor_4d(ctx_g, TYPE_F32, frames, frames, 1, B);
     Tensor* flip_perm  = new_tensor_2d(ctx_g, TYPE_F32, scfg.flow.channels, scfg.flow.channels);
     Tensor* slice_mat  = new_tensor_3d(ctx_g, TYPE_F32, frames, seg, B);
     Tensor* sine_slice = new_tensor_3d(ctx_g, TYPE_F32, 1, total_slice, B);
     if (attn_valid == nullptr || flip_perm == nullptr || slice_mat == nullptr ||
         sine_slice == nullptr) {
-        std::printf("[train-step] 创建叶子失败\n");
+        std::printf("[train-step] failed to create leaves\n");
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -472,16 +472,16 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     in.include_full      = false;
     SynthOutputs out = model::synth_forward(ctx_g, g_params, synth, in);
     if (out.o_slice == nullptr) {
-        std::printf("[train-step] synth_forward 失败\n");
+        std::printf("[train-step] synth_forward failed\n");
         context_free(ctx_g);
         delete wg;
         delete wd;
         return 1;
     }
-    // D 输入 = y_hat 前 disc_len 个采样（测试尺度；view 可反传，见 M3-0 计划 disc L=2048）
+    // D input = first disc_len samples of y_hat (test scale; the view is differentiable, see the M3-0 plan disc L=2048)
     Tensor* y_hat_d = view_3d(ctx_g, out.o_slice, disc_len, 1, B, 0);
     if (y_hat_d == nullptr) {
-        std::printf("[train-step] y_hat_d 视图创建失败\n");
+        std::printf("[train-step] failed to create the y_hat_d view\n");
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -491,7 +491,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
 
     MpdForward f_g = model::mpd_forward(ctx_g, mpd_g, inputs["wave"], y_hat_d);
     if (f_g.r.empty() || f_g.r.size() != f_g.g.size()) {
-        std::printf("[train-step] G 图 D 前向失败\n");
+        std::printf("[train-step] D forward in the G graph failed\n");
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -517,7 +517,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     smcfg.mag_eps  = (float) j_num(gm.params, "mag_eps", 2e-7);
     smcfg.log_clip = (float) j_num(gm.params, "log_clip", 2e-6);
     if (!smcfg.validate(&err)) {
-        std::printf("[train-step] STFT/mel 配置无效: %s\n", err.c_str());
+        std::printf("[train-step] invalid STFT/mel config: %s\n", err.c_str());
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -540,7 +540,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
                                                       out.logs_p, inputs["y_mask"]),
                             c_kl);
     if (loss_gen == nullptr || loss_fm == nullptr || loss_mel == nullptr || loss_kl == nullptr) {
-        std::printf("[train-step] G 损失建图失败\n");
+        std::printf("[train-step] G loss graph build failed\n");
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -554,13 +554,13 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     tensor_set_name(loss_mel, "loss_mel");
     tensor_set_name(loss_kl, "loss_kl");
     tensor_set_loss(loss_gen_all);
-    // 分量标为 OUTPUT 使其在图级分配下保持可读（仅对拍读数；不参与反向播种）
+    // Mark components as OUTPUT so they stay readable under graph-level allocation (comparison reads only; not part of backward seeding)
     loss_gen->flags |= TENSOR_FLAG_OUTPUT;
     loss_fm->flags |= TENSOR_FLAG_OUTPUT;
     loss_mel->flags |= TENSOR_FLAG_OUTPUT;
     loss_kl->flags |= TENSOR_FLAG_OUTPUT;
-    // FIX-002（Q23）：compute 后仍由主机读取的视图/视图根也须标 OUTPUT
-    // （:839 预热后读 y_hat_d；:1000-1014 前向对拍读 o_slice）
+    // FIX-002 (Q23): views/view roots still read by the host after compute must also be flagged OUTPUT
+    // (:839 reads y_hat_d after warm-up; :1000-1014 forward comparison reads o_slice)
     out.o_slice->flags |= TENSOR_FLAG_OUTPUT;
     y_hat_d->flags |= TENSOR_FLAG_OUTPUT;
 
@@ -569,7 +569,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     }
     Graph* g_graph = graph_new(ctx_g);
     if (g_graph == nullptr) {
-        std::printf("[train-step] G 图创建失败\n");
+        std::printf("[train-step] G graph create failed\n");
         context_free(ctx_g);
         delete wg;
         delete wd;
@@ -581,21 +581,21 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     int leak_failed = 0;
     for (Tensor* t : d_params_g.params().items) {
         if (t->grad_acc != nullptr) {
-            std::printf("[train-step] [FAIL] 冻结侧泄漏: G 图反向展开后 D 参数 %s 有 grad_acc\n",
+            std::printf("[train-step] [FAIL] frozen-side leak: D parameter %s has grad_acc after G graph backward expansion\n",
                         t->name);
             ++leak_failed;
         }
     }
     if (leak_failed == 0) {
-        std::printf("[train-step] 无泄漏(A)：G 图冻结 D（%lld 参数无 grad_acc）OK\n",
+        std::printf("[train-step] no leak (A): G graph freezes D (%lld parameters with no grad_acc) OK\n",
                     (long long) d_params_g.count());
     }
 
-    std::printf("[train-step] 后端 = %s；G 图分配中（图级 liveness）...\n",
+    std::printf("[train-step] backend = %s; allocating G graph (graph-level liveness)...\n",
                 dev->props().name.c_str());
     Buffer* buf_g = buffer_alloc_graph_tensors(g_graph, dev->default_buffer_type());
     if (buf_g == nullptr) {
-        std::printf("[train-step] G 图分配失败（可用 RVCT_DEBUG_ALLOC=1 诊断；Q18 预案：降 T/分 ctx）\n");
+        std::printf("[train-step] G graph allocation failed (diagnose with RVCT_DEBUG_ALLOC=1; Q18 mitigation: reduce T / split ctx)\n");
         graph_free(g_graph);
         context_free(ctx_g);
         delete wg;
@@ -603,11 +603,11 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         return 1;
     }
 
-    // ---------------- ctx_d：D 图 ----------------
+    // ---------------- ctx_d: D graph ----------------
     Context* ctx_d = context_new(1u << 20);
     ModelParams d_params_d;
     if (ctx_d == nullptr || !d_params_d.build_all(ctx_d, *wd, &err)) {
-        std::printf("[train-step] ctx_d/建参失败: %s\n", err.c_str());
+        std::printf("[train-step] ctx_d/parameter building failed: %s\n", err.c_str());
         context_free(ctx_d);
         graph_free(g_graph);
         buffer_free(buf_g);
@@ -618,7 +618,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     }
     MpdModule mpd_d;
     if (!model::mpd_load(d_params_d, dcfg, &mpd_d, &err)) {
-        std::printf("[train-step] D 图装配失败: %s\n", err.c_str());
+        std::printf("[train-step] D graph assembly failed: %s\n", err.c_str());
         context_free(ctx_d);
         graph_free(g_graph);
         buffer_free(buf_g);
@@ -630,7 +630,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     Tensor* wave_d = new_tensor_3d(ctx_d, TYPE_F32, disc_len, 1, B);
     Tensor* fake_d = new_tensor_3d(ctx_d, TYPE_F32, disc_len, 1, B);
     if (wave_d == nullptr || fake_d == nullptr) {
-        std::printf("[train-step] D 图叶子创建失败\n");
+        std::printf("[train-step] failed to create D graph leaves\n");
         context_free(ctx_d);
         graph_free(g_graph);
         buffer_free(buf_g);
@@ -643,7 +643,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     tensor_set_name(fake_d, "d_fake");
     MpdForward f_d = model::mpd_forward(ctx_d, mpd_d, wave_d, fake_d);
     if (f_d.r.empty() || f_d.r.size() != f_d.g.size()) {
-        std::printf("[train-step] D 图前向失败\n");
+        std::printf("[train-step] D graph forward failed\n");
         context_free(ctx_d);
         graph_free(g_graph);
         buffer_free(buf_g);
@@ -660,7 +660,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     }
     Tensor* loss_disc = loss_lsgan_discriminator(ctx_d, dr_outs, dg_outs_d);
     if (loss_disc == nullptr) {
-        std::printf("[train-step] D 损失建图失败\n");
+        std::printf("[train-step] D loss graph build failed\n");
         context_free(ctx_d);
         graph_free(g_graph);
         buffer_free(buf_g);
@@ -676,7 +676,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     }
     Graph* d_graph = graph_new(ctx_d);
     if (d_graph == nullptr) {
-        std::printf("[train-step] D 图创建失败\n");
+        std::printf("[train-step] D graph create failed\n");
         context_free(ctx_d);
         graph_free(g_graph);
         buffer_free(buf_g);
@@ -689,7 +689,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     graph_build_backward_expand(d_graph);
     Buffer* buf_d = buffer_alloc_graph_tensors(d_graph, dev->default_buffer_type());
     if (buf_d == nullptr) {
-        std::printf("[train-step] D 图分配失败\n");
+        std::printf("[train-step] D graph allocation failed\n");
         graph_free(d_graph);
         context_free(ctx_d);
         graph_free(g_graph);
@@ -699,49 +699,49 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         delete wd;
         return 1;
     }
-    std::printf("[train-step] ctx_g 图缓冲 %.1f MiB；ctx_d 图缓冲 %.1f MiB\n",
+    std::printf("[train-step] ctx_g graph buffer %.1f MiB; ctx_d graph buffer %.1f MiB\n",
                 (double) buf_g->size() / (1024.0 * 1024.0),
                 (double) buf_d->size() / (1024.0 * 1024.0));
 
-    // ---------------- 权重装载 ----------------
+    // ---------------- weight loading ----------------
     for (Tensor* t : g_params.params().items) {
         if (!wg->load(t, t->name, &err)) {
-            std::printf("[train-step] G 参数装载失败: %s\n", err.c_str());
+            std::printf("[train-step] G parameter loading failed: %s\n", err.c_str());
             return 1;
         }
     }
     for (Tensor* t : d_params_g.params().items) {
         if (!wd->load(t, t->name, &err)) {
-            std::printf("[train-step] G 图 D 参数装载失败: %s\n", err.c_str());
+            std::printf("[train-step] G graph D parameter loading failed: %s\n", err.c_str());
             return 1;
         }
     }
     for (Tensor* t : d_params_d.params().items) {
         if (!wd->load(t, t->name, &err)) {
-            std::printf("[train-step] D 图 D 参数装载失败: %s\n", err.c_str());
+            std::printf("[train-step] D graph D parameter loading failed: %s\n", err.c_str());
             return 1;
         }
     }
 
-    // ---------------- 注入输入 + prepare ----------------
+    // ---------------- inject inputs + prepare ----------------
     {
         std::vector<uint8_t> bytes;
         for (const auto& kv : inputs) {
             if (!fill_tensor_from_entry(kv.second, gm, kv.first, &err)) {
-                std::printf("[train-step] 输入注入失败: %s\n", err.c_str());
+                std::printf("[train-step] input injection failed: %s\n", err.c_str());
                 return 1;
             }
         }
-        // wave → D 图叶子（同一份数据）
+        // wave -> D graph leaf (same data)
         std::vector<float> wv((size_t) disc_len * (size_t) B);
         tensor_get(inputs["wave"], wv.data(), 0, wv.size() * sizeof(float));
         tensor_set(wave_d, wv.data(), 0, wv.size() * sizeof(float));
 
         if (!model::flow_fill_flip_perm(flip_perm, &err)) {
-            std::printf("[train-step] flip 置换矩阵填充失败: %s\n", err.c_str());
+            std::printf("[train-step] flip permutation matrix fill failed: %s\n", err.c_str());
             return 1;
         }
-        // attn_valid = x_mask 外积
+        // attn_valid = x_mask outer product
         {
             std::vector<float> xm((size_t) (frames * B));
             tensor_get(inputs["x_mask"], xm.data(), 0, xm.size() * sizeof(float));
@@ -758,18 +758,18 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             }
             tensor_set(attn_valid, av.data(), 0, av.size() * sizeof(float));
         }
-        // slice_mat / pitchf_slice（主机读取 golden）
+        // slice_mat / pitchf_slice (host reads golden)
         std::vector<int32_t> idv;
         std::vector<float> pfall;
         std::vector<float> noise;
         if (!entry_i32(gm, "ids_slice", &idv, &err) || !entry_f32(gm, "pitchf", &pfall, &err) ||
             !entry_f32(gm, "sine_noise_slice", &noise, &err)) {
-            std::printf("[train-step] 主机输入读取失败: %s\n", err.c_str());
+            std::printf("[train-step] host input read failed: %s\n", err.c_str());
             return 1;
         }
         if ((int64_t) idv.size() != B || (int64_t) pfall.size() != frames * B ||
             (int64_t) noise.size() != total_slice * B) {
-            std::printf("[train-step] 主机输入尺寸不符（ids=%zu pitchf=%zu noise=%zu）\n",
+            std::printf("[train-step] host input size mismatch (ids=%zu pitchf=%zu noise=%zu)\n",
                         idv.size(), pfall.size(), noise.size());
             return 1;
         }
@@ -778,7 +778,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         for (int64_t b = 0; b < B; ++b) {
             const int64_t id = idv[(size_t) b];
             if (id < 0 || id + seg > frames) {
-                std::printf("[train-step] ids_slice 越界: %lld\n", (long long) id);
+                std::printf("[train-step] ids_slice out of range: %lld\n", (long long) id);
                 return 1;
             }
             for (int64_t s = 0; s < seg; ++s) {
@@ -788,7 +788,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         }
         tensor_set(slice_mat, sm.data(), 0, sm.size() * sizeof(float));
 
-        // SineGen（旧 cumsum_shift 法；噪声 = golden 落盘）
+        // SineGen (legacy cumsum_shift method; noise = golden dumped to disk)
         const int64_t sr = (int64_t) smcfg.sr;
         std::vector<float> ss((size_t) (total_slice * B), 0.0f);
         for (int64_t b = 0; b < B; ++b) {
@@ -800,7 +800,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
                 f0s.data(), seg, (int) sr, (int) upp, noise.data() + (size_t) b * total_slice,
                 total_slice, 1234);
             if ((int64_t) s.size() != total_slice) {
-                std::printf("[train-step] SineGen 输出长度不符\n");
+                std::printf("[train-step] SineGen output length mismatch\n");
                 return 1;
             }
             std::memcpy(ss.data() + (size_t) b * total_slice, s.data(),
@@ -808,12 +808,12 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         }
         tensor_set(sine_slice, ss.data(), 0, ss.size() * sizeof(float));
 
-        // STFT/mel 常量
+        // STFT/mel constants
         stft_mel_fill_dft_kernel(&smconsts, smcfg);
         stft_mel_fill_mel_basis(&smconsts, smcfg);
     }
 
-    // ---------------- 优化器 ----------------
+    // ---------------- optimizer ----------------
     std::vector<Tensor*> g_opt;
     std::vector<Tensor*> d_opt;
     for (Tensor* t : g_params.params().items) {
@@ -826,16 +826,16 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             d_opt.push_back(t);
         }
     }
-    std::printf("[train-step] 优化器参数：G %zu/%lld，D %zu/%lld\n", g_opt.size(),
+    std::printf("[train-step] optimizer parameters: G %zu/%lld, D %zu/%lld\n", g_opt.size(),
                 (long long) g_params.count(), d_opt.size(), (long long) d_params_d.count());
     Optimizer* optim_g = optim_adamw_new(ctx_g, g_opt.data(), (int64_t) g_opt.size(), opts);
     Optimizer* optim_d = optim_adamw_new(ctx_d, d_opt.data(), (int64_t) d_opt.size(), opts);
 
-    // ---------------- 双图训练步 ----------------
-    // 1) G 图预热：先得到 y_hat（pre-update；同时算出 pre-update D 的梯度，随后丢弃）
+    // ---------------- dual-graph training step ----------------
+    // 1) G graph warm-up: first obtain y_hat (pre-update; the pre-update D gradients computed along the way are discarded)
     graph_reset(g_graph);
     if (!dev->graph_compute(g_graph)) {
-        std::printf("[train-step] G 图预热 compute 失败\n");
+        std::printf("[train-step] G graph warm-up compute failed\n");
         return 1;
     }
     {
@@ -849,10 +849,10 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     read_params(g_params, &g_snap);
     read_params(d_params_g, &d_snap_g);
 
-    // 2) D 步（fake = y_hat.detach() 的等价值）
+    // 2) D step (fake = the detached equivalent of y_hat)
     graph_reset(d_graph);
     if (!dev->graph_compute(d_graph)) {
-        std::printf("[train-step] D 图 compute 失败\n");
+        std::printf("[train-step] D graph compute failed\n");
         return 1;
     }
     std::map<std::string, std::vector<float>> d_before;
@@ -861,7 +861,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     std::map<std::string, std::vector<float>> d_after;
     read_params(d_params_d, &d_after);
 
-    // D 侧快照（ctx_d 随后释放，之后不可再访问其张量/梯度）
+    // D-side snapshots (ctx_d is released afterwards; its tensors/gradients must not be accessed again)
     std::map<std::string, double> d_grad_max;
     for (Tensor* t : d_params_d.params().items) {
         if (t->grad_acc == nullptr) {
@@ -878,26 +878,26 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     float loss_disc_value = 0.0f;
     tensor_get(loss_disc, &loss_disc_value, 0, sizeof(loss_disc_value));
 
-    // 断言(B)：D 步后 G 参数逐位不变
+    // Assertion (B): G parameters bit-unchanged after the D step
     {
         std::map<std::string, std::vector<float>> now;
         read_params(g_params, &now);
         for (const auto& kv : g_snap) {
             if (!values_equal(kv.second, now[kv.first])) {
-                std::printf("[train-step] [FAIL] D 步改动了 G 参数: %s\n", kv.first.c_str());
+                std::printf("[train-step] [FAIL] D step modified G parameter: %s\n", kv.first.c_str());
                 ++leak_failed;
             }
         }
         if (leak_failed == 0) {
-            std::printf("[train-step] 无泄漏(B)：D 步后 G 参数逐位不变 OK\n");
+            std::printf("[train-step] no leak (B): G parameters bit-unchanged after the D step OK\n");
         }
     }
 
-    // 3) 更新后的 D 权重拷回 G 图（G 图 D 节点每次 compute 时读取）
+    // 3) Copy the updated D weights back into the G graph (the G graph's D nodes read them on each compute)
     for (Tensor* t : d_params_g.params().items) {
         Tensor* s = d_params_d.find(t->name);
         if (s == nullptr) {
-            std::printf("[train-step] D 参数名不匹配: %s\n", t->name);
+            std::printf("[train-step] D parameter name mismatch: %s\n", t->name);
             return 1;
         }
         std::vector<uint8_t> bytes((size_t) tensor_nelements(t) * tensor_element_size(t));
@@ -907,7 +907,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     std::map<std::string, std::vector<float>> d_snap2;
     read_params(d_params_g, &d_snap2);
 
-    // ctx_d 释放（D 步已完成；ΔW/梯度/损失均已快照到主机）→ 峰值显存下降（Q18 预案：分 ctx）
+    // Release ctx_d (the D step is done; ΔW/gradients/losses are all snapshotted to the host) -> peak VRAM drops (Q18 mitigation: split ctx)
     optim_free(optim_d);
     buffer_free(buf_d);
     graph_free(d_graph);
@@ -917,10 +917,10 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     d_graph = nullptr;
     ctx_d   = nullptr;
 
-    // 4) G 步（D 冻结节点读更新后的 D；graph_reset 清掉预热梯度）
+    // 4) G step (frozen D nodes read the updated D; graph_reset clears the warm-up gradients)
     graph_reset(g_graph);
     if (!dev->graph_compute(g_graph)) {
-        std::printf("[train-step] G 图（最终）compute 失败\n");
+        std::printf("[train-step] G graph (final) compute failed\n");
         return 1;
     }
     std::map<std::string, std::vector<float>> g_before;
@@ -929,7 +929,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     std::map<std::string, std::vector<float>> g_after;
     read_params(g_params, &g_after);
 
-    // 诊断（可选）：RVCT_DUMP_TRAINSTEP=DIR 落盘 C++ ΔW 与 grad_acc（供逐元素定位）
+    // Optional diagnostic: RVCT_DUMP_TRAINSTEP=DIR dumps the C++ ΔW and grad_acc to disk (for element-wise localization)
     {
         char*  dir_env = nullptr;
         size_t dir_len = 0;
@@ -967,26 +967,26 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
                 const std::vector<float> d = make_delta(kv.second, d_before[kv.first]);
                 dump_f32("d_delta", kv.first, d.data(), d.size());
             }
-            std::printf("[train-step] 诊断落盘: %s（g_delta/g_grad/d_delta）\n", base.c_str());
+            std::printf("[train-step] diagnostic dump: %s (g_delta/g_grad/d_delta)\n", base.c_str());
         }
     }
 
-    // 断言(C)：G 步后（ctx_g 中的）D 参数逐位不变
+    // Assertion (C): D parameters (in ctx_g) bit-unchanged after the G step
     {
         std::map<std::string, std::vector<float>> now;
         read_params(d_params_g, &now);
         for (const auto& kv : d_snap2) {
             if (!values_equal(kv.second, now[kv.first])) {
-                std::printf("[train-step] [FAIL] G 步改动了 D 参数: %s\n", kv.first.c_str());
+                std::printf("[train-step] [FAIL] G step modified D parameter: %s\n", kv.first.c_str());
                 ++leak_failed;
             }
         }
         if (leak_failed == 0) {
-            std::printf("[train-step] 无泄漏(C)：G 步后 D 参数逐位不变 OK\n");
+            std::printf("[train-step] no leak (C): D parameters bit-unchanged after the G step OK\n");
         }
     }
 
-    // ---------------- 对拍：ΔW / loss / 前向 ----------------
+    // ---------------- comparison: ΔW / loss / forward ----------------
     const auto get_f32 = [](Tensor* t) {
         float v = 0.0f;
         tensor_get(t, &v, 0, sizeof(v));
@@ -995,7 +995,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     int64_t checked = 0;
     int64_t failed  = 0;
 
-    // 前向中间量：y_hat（o_slice）与 y_hat_d
+    // Forward intermediates: y_hat (o_slice) and y_hat_d
     {
         struct FwdItem {
             const char* name;
@@ -1010,7 +1010,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             std::vector<float> ref;
             if (!entry_f32(gm, it.name, &ref, &err) ||
                 ref.size() != (size_t) tensor_nelements(it.t)) {
-                std::printf("[train-step]   %-24s [FAIL] 参考读取失败: %s\n", it.name, err.c_str());
+                std::printf("[train-step]   %-24s [FAIL] reference read failed: %s\n", it.name, err.c_str());
                 ++failed;
                 continue;
             }
@@ -1028,13 +1028,13 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         }
     }
 
-    // loss（loss_disc 用 ctx_d 释放前的快照值；其余来自 G 图）
+    // loss (loss_disc uses the snapshot taken before ctx_d was released; the rest come from the G graph)
     {
-        // loss_disc 快照对比
+        // loss_disc snapshot comparison
         {
             std::vector<float> ref;
             if (!entry_f32(gm, "loss_disc", &ref, &err) || ref.empty()) {
-                std::printf("[train-step]   %-24s [FAIL] 参考读取失败: %s\n", "loss_disc", err.c_str());
+                std::printf("[train-step]   %-24s [FAIL] reference read failed: %s\n", "loss_disc", err.c_str());
                 ++failed;
             } else {
                 const double rel = std::fabs((double) loss_disc_value - (double) ref[0]) /
@@ -1053,8 +1053,8 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             Tensor* t;
             double tol;
         };
-        // loss_gen：LSGAN(G)=Σ mean((1-dg)²) 在 dg≈1 处对 D 一步的 kink 元素（每个差 2·lr）
-        // 呈二次放大（Vulkan 实测 2.8e-4，CPU 2.6e-5）→ 单独放宽到 5e-4；其余严格 1e-4。
+        // loss_gen: LSGAN(G)=Σ mean((1-dg)²) near dg≈1; kink elements of the D step (each differing by 2·lr)
+        // are amplified quadratically (measured 2.8e-4 on Vulkan, 2.6e-5 on CPU) -> relaxed to 5e-4; the rest stay strict at 1e-4.
         const LossItem items[] = {{"loss_gen_all", loss_gen_all, kLossTol},
                                   {"loss_gen", loss_gen, 5e-4},
                                   {"loss_fm", loss_fm, kLossTol},
@@ -1063,7 +1063,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         for (const LossItem& it : items) {
             std::vector<float> ref;
             if (!entry_f32(gm, it.name, &ref, &err) || ref.size() < 1) {
-                std::printf("[train-step]   %-24s [FAIL] 参考读取失败: %s\n", it.name, err.c_str());
+                std::printf("[train-step]   %-24s [FAIL] reference read failed: %s\n", it.name, err.c_str());
                 ++failed;
                 continue;
             }
@@ -1071,7 +1071,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             const double rel =
                 std::fabs((double) got - (double) ref[0]) / std::max(1.0, std::fabs((double) ref[0]));
             const bool ok = (rel <= it.tol);
-            std::printf("[train-step]   %-24s ref=%.6f got=%.6f rel=%.3e（门 %.0e）%s\n", it.name,
+            std::printf("[train-step]   %-24s ref=%.6f got=%.6f rel=%.3e (gate %.0e) %s\n", it.name,
                         (double) ref[0], (double) got, rel, it.tol, ok ? "OK" : "FAIL");
             ++checked;
             if (!ok) {
@@ -1080,12 +1080,12 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
         }
     }
 
-    // ΔW：golden role=delta 逐参数对比。
-    // 口径（M3-3；与 Q17 长 T 统计口径同类）：一步 AdamW 的更新 ≈ -lr·sign(g)（零状态起步），
-    // 近零梯度元素的 sign 由 F32 累加噪声决定，跨实现必然出现 ±2·lr 的符号翻转（kink）。
-    //   - 硬门：|got-ref| > 1e-4 且不满足 kink 条件（两侧 |Δ|≤1.5·lr、反号、|差|≤2.1·lr）→ 失败；
-    //   - kink 统计门：每张量 kink ≤ max(2, 0.5%·元素数)（梯度整场低于噪声 1e-6 的张量不设比例上限）；
-    //     全局 kink ≤ 0.1%（观测 0.012%，留 8× 余量）。
+    // ΔW: per-parameter comparison against golden role=delta.
+    // Convention (M3-3; same class as the Q17 long-T statistical convention): one AdamW update ≈ -lr·sign(g) (zero state at start),
+    // the sign of near-zero-gradient elements is determined by F32 accumulation noise, so a ±2·lr sign flip across implementations is inevitable (kink).
+    //   - Hard gate: |got-ref| > 1e-4 and the kink condition does not hold (both sides |Δ|≤1.5·lr, opposite signs, |diff|≤2.1·lr) -> fail;
+    //   - Kink statistical gate: per tensor kink ≤ max(2, 0.5%·element count) (no ratio cap for tensors whose entire gradient field is below the 1e-6 noise floor);
+    //     global kink ≤ 0.1% (observed 0.012%, an 8× margin).
     const double kink_scale    = 1.5 * (double) opts.lr;
     const double kink_max_diff = 2.1 * (double) opts.lr;
     const double kGradNoise    = 1e-6;
@@ -1119,7 +1119,7 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             ++delta_checked;
             std::vector<float> ref;
             if (!entry_f32(gm, gt.name, &ref, &err)) {
-                std::printf("[train-step]   ΔW %-46s [FAIL] 参考读取失败: %s\n", gt.name.c_str(),
+                std::printf("[train-step]   ΔW %-46s [FAIL] reference read failed: %s\n", gt.name.c_str(),
                             err.c_str());
                 ++delta_failed;
                 continue;
@@ -1130,13 +1130,13 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
             } else if (d_after.count(gt.name) != 0 && d_before.count(gt.name) != 0) {
                 got = make_delta(d_after[gt.name], d_before[gt.name]);
             } else {
-                std::printf("[train-step]   ΔW %-46s [FAIL] C++ 无该参数（梯度缺失）\n",
+                std::printf("[train-step]   ΔW %-46s [FAIL] C++ lacks this parameter (gradient missing)\n",
                             gt.name.c_str());
                 ++delta_failed;
                 continue;
             }
             if (got.size() != ref.size()) {
-                std::printf("[train-step]   ΔW %-46s [FAIL] 元素数不符（%zu != %zu）\n",
+                std::printf("[train-step]   ΔW %-46s [FAIL] element count mismatch (%zu != %zu)\n",
                             gt.name.c_str(), got.size(), ref.size());
                 ++delta_failed;
                 continue;
@@ -1186,38 +1186,38 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
                 ++delta_failed;
             }
         }
-        // C++ 侧有梯度但 golden 无 ΔW → 图结构不一致
+        // C++ has gradients but golden has no ΔW -> graph structure mismatch
         for (const auto& kv : g_after) {
             if (golden_delta_names.count(kv.first) == 0) {
-                std::printf("[train-step]   ΔW %-46s [FAIL] golden 缺少（C++ 有梯度）\n",
+                std::printf("[train-step]   ΔW %-46s [FAIL] golden missing (C++ has gradients)\n",
                             kv.first.c_str());
                 ++delta_failed;
             }
         }
         for (const auto& kv : d_after) {
             if (golden_delta_names.count(kv.first) == 0) {
-                std::printf("[train-step]   ΔW %-46s [FAIL] golden 缺少（C++ 有梯度）\n",
+                std::printf("[train-step]   ΔW %-46s [FAIL] golden missing (C++ has gradients)\n",
                             kv.first.c_str());
                 ++delta_failed;
             }
         }
         const double kink_frac = (elem_total > 0) ? (double) kink_total / (double) elem_total : 1.0;
         if (kink_frac > 0.001) {
-            std::printf("[train-step]   ΔW [FAIL] 全局 kink 比例 %.4f%% > 0.1%%\n", kink_frac * 100.0);
+            std::printf("[train-step]   ΔW [FAIL] global kink fraction %.4f%% > 0.1%%\n", kink_frac * 100.0);
             ++delta_failed;
         }
         checked += delta_checked;
         failed  += delta_failed;
-        std::printf("[train-step] ΔW 对拍：%lld/%lld 张量通过；元素 %lld；kink %lld（%.4f%%，门 "
-                    "≤0.1%%）；硬误差 %lld（门 0）\n",
+        std::printf("[train-step] ΔW comparison: %lld/%lld tensors passed; elements %lld; kink %lld (%.4f%%, gate "
+                    "≤0.1%%); hard errors %lld (gate 0)\n",
                     (long long) (delta_checked - delta_failed), (long long) delta_checked,
                     (long long) elem_total, (long long) kink_total, kink_frac * 100.0,
                     (long long) hard_total);
     }
 
     const bool ok = (failed == 0 && leak_failed == 0 && checked > 0);
-    std::printf("[train-step] 对拍 %s（前向/loss/ΔW 共 %lld 项：%lld 通过；泄漏断言 %s）\n",
-                ok ? "通过" : "失败", (long long) checked, (long long) (checked - failed),
+    std::printf("[train-step] comparison %s (forward/loss/ΔW %lld items: %lld passed; leak assertions %s)\n",
+                ok ? "PASSED" : "FAILED", (long long) checked, (long long) (checked - failed),
                 leak_failed == 0 ? "OK" : "FAIL");
 
     optim_free(optim_g);
@@ -1241,12 +1241,12 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
     return ok ? 0 : 1;
 }
 
-// ---------------------------------------------------------------- M5-2 训练循环
+// ---------------------------------------------------------------- M5-2 training loop
 
 int run_train_loop_impl(const std::string& weights_g, const std::string& weights_d,
                         const std::string& golden_dir, Device* dev) {
     if (dev == nullptr) {
-        std::printf("[train-loop] 无可用设备\n");
+        std::printf("[train-loop] no usable device\n");
         return 2;
     }
     std::string err;
@@ -1258,7 +1258,7 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
     const common::JsonValue* synth_json = gm.params.find("synth");
     const common::JsonValue* disc_json  = gm.params.find("disc");
     if (synth_json == nullptr || disc_json == nullptr) {
-        std::printf("[train-loop] manifest.params.synth/disc 缺失（需重新生成 golden）\n");
+        std::printf("[train-loop] manifest.params.synth/disc missing (regenerate the golden)\n");
         return 1;
     }
 
@@ -1277,26 +1277,26 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
     const double tol_first = j_num(gm.params, "tol_first", 1e-4);
     const double tol_later = j_num(gm.params, "tol", 1e-2);
     if (cfg.frames <= 0 || steps <= 0) {
-        std::printf("[train-loop] manifest frames/steps 非法\n");
+        std::printf("[train-loop] invalid manifest frames/steps\n");
         return 1;
     }
 
-    std::printf("[train-loop] golden=%s 设备=%s T=%lld B=%lld disc_len=%lld steps=%lld "
-                "（门：首步 %.0e，后续 %.0e）\n",
+    std::printf("[train-loop] golden=%s device=%s T=%lld B=%lld disc_len=%lld steps=%lld "
+                "(gate: first step %.0e, later steps %.0e)\n",
                 golden_dir.c_str(), dev->props().name.c_str(), (long long) cfg.frames,
                 (long long) cfg.batch, (long long) cfg.disc_len, (long long) steps, tol_first,
                 tol_later);
 
     TrainStep* ts = TrainStep::create(weights_g, weights_d, cfg, dev, &err);
     if (ts == nullptr) {
-        std::printf("[train-loop] TrainStep 创建失败: %s\n", err.c_str());
+        std::printf("[train-loop] TrainStep create failed: %s\n", err.c_str());
         return 1;
     }
     {
         const TrainStepMemory m = ts->memory();
         const ContextMemoryStats s = context_memory_stats(ts->context());
         std::printf("[train-loop] buf_g=%.1f MiB buf_d=%.1f MiB ctx_tensor=%.1f MiB "
-                    "persistent=%.1f MiB tensors=%lld G节点=%lld D节点=%lld\n",
+                    "persistent=%.1f MiB tensors=%lld G nodes=%lld D nodes=%lld\n",
                     (double) m.buf_g_bytes / (1024.0 * 1024.0),
                     (double) m.buf_d_bytes / (1024.0 * 1024.0),
                     (double) s.tensor_bytes / (1024.0 * 1024.0),
@@ -1305,9 +1305,9 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
                     (long long) graph_n_nodes(ts->graph_d()));
         const TrainStepMemoryBreakdown pb = ts->persistent_breakdown();
         const double mib = 1024.0 * 1024.0;
-        std::printf("[train-loop] 持久分解（Q23）：视图根 %.1f（其中参数/叶子 %.1f、普通中间量 "
-                    "%.1f）、参数/损失/输出 %.1f、叶子 %.1f、grad_acc %.1f、宿主 %.1f、非持久 "
-                    "%.1f MiB；视图 %lld/%lld 张量\n",
+        std::printf("[train-loop] persistent breakdown (Q23): view roots %.1f (of which params/leaves %.1f, ordinary intermediates "
+                    "%.1f), param/loss/output %.1f, leaves %.1f, grad_acc %.1f, hosts %.1f, non-persistent "
+                    "%.1f MiB; views %lld/%lld tensors\n",
                     (double) pb.view_root_bytes / mib, (double) pb.view_root_leaf_bytes / mib,
                     (double) pb.view_root_interm_bytes / mib,
                     (double) pb.param_loss_out_bytes / mib, (double) pb.leaf_bytes / mib,
@@ -1316,18 +1316,18 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
                     (long long) pb.tensor_count);
     }
 
-    // 固定输入（所有步共用）
+    // Fixed inputs (shared by all steps)
     data::BatchBuffers base;
     auto load_f32 = [&](const std::string& name, std::vector<float>* out) {
         if (!entry_f32(gm, name, out, &err)) {
-            std::printf("[train-loop] 读取 %s 失败: %s\n", name.c_str(), err.c_str());
+            std::printf("[train-loop] failed to read %s: %s\n", name.c_str(), err.c_str());
             return false;
         }
         return true;
     };
     auto load_i32 = [&](const std::string& name, std::vector<int32_t>* out) {
         if (!entry_i32(gm, name, out, &err)) {
-            std::printf("[train-loop] 读取 %s 失败: %s\n", name.c_str(), err.c_str());
+            std::printf("[train-loop] failed to read %s: %s\n", name.c_str(), err.c_str());
             return false;
         }
         return true;
@@ -1343,9 +1343,9 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
     const char* kLossNames[6] = {"loss_disc", "loss_gen_all", "loss_gen",
                                  "loss_fm",   "loss_mel",     "loss_kl"};
 
-    // 参考 loss（主 golden）与可选混沌探针包络（<golden>/probe，Q24 修订门）：
-    // 探针 = Python 参考加与 M3-3 实测 AdamW kink 同量级扰动后同数据重跑；
-    // 逐步容差 = max(tol_later, 3 × 探针相对偏差)，首步仍用 tol_first。
+    // Reference losses (main golden) and optional chaotic-probe envelope (<golden>/probe, Q24 revised gate):
+    // the probe = the Python reference rerun on the same data after perturbations at the same magnitude as the M3-3 measured AdamW kink;
+    // per-step tolerance = max(tol_later, 3 × probe relative deviation); the first step still uses tol_first.
     std::vector<std::array<double, 6>> ref_loss((size_t) steps);
     bool ref_ok = true;
     for (int64_t i = 0; i < steps; ++i) {
@@ -1353,7 +1353,7 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
         for (int k = 0; k < 6; ++k) {
             std::vector<float> ref;
             if (!entry_f32(gm, p + kLossNames[k], &ref, &err) || ref.empty()) {
-                std::printf("[train-loop] %s%s 参考读取失败: %s\n", p.c_str(), kLossNames[k],
+                std::printf("[train-loop] %s%s reference read failed: %s\n", p.c_str(), kLossNames[k],
                             err.c_str());
                 ref_ok = false;
                 break;
@@ -1369,7 +1369,7 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
         return 1;
     }
     std::vector<double> step_tol((size_t) steps, tol_later);
-    // 优先用 manifest.params.tols（make_train_loop_envelope.py 固化的多探针系综 × scale 包络）
+    // Prefer manifest.params.tols (multi-probe ensemble × scale envelope pinned by make_train_loop_envelope.py)
     bool have_envelope = false;
     if (const common::JsonValue* tv = gm.params.find("tols");
         tv != nullptr && tv->is_array() && tv->size() == (size_t) steps) {
@@ -1377,10 +1377,10 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
             step_tol[(size_t) i] = tv->at((size_t) i).as_number(tol_later);
         }
         have_envelope = true;
-        std::printf("[train-loop] 容差包络：manifest.params.tols（%lld 步；Q24 修订门）\n",
+        std::printf("[train-loop] tolerance envelope: manifest.params.tols (%lld steps; Q24 revised gate)\n",
                     (long long) steps);
     }
-    // 回退：<golden>/probe 单探针 ×3
+    // Fallback: single <golden>/probe probe ×3
     GoldenManifest gp;
     if (!have_envelope &&
         model::golden_manifest_load(join_path(golden_dir, "probe"), "train_loop", &gp, &err)) {
@@ -1402,16 +1402,16 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
             step_tol[(size_t) i] = std::max(tol_later, 3.0 * pmax);
         }
         have_envelope = true;
-        std::printf("[train-loop] 容差包络：%s/probe 单探针 ×3（建议用 make_train_loop_envelope.py "
-                    "固化多探针包络）\n", golden_dir.c_str());
+        std::printf("[train-loop] tolerance envelope: single %s/probe probe ×3 (recommend pinning a multi-probe "
+                    "envelope with make_train_loop_envelope.py)\n", golden_dir.c_str());
     }
     if (!have_envelope) {
         for (int64_t i = 0; i < steps; ++i) {
             step_tol[(size_t) i] = (i == 0) ? tol_first : tol_later;
         }
-        std::printf("[train-loop] 无探针包络（%s/probe 缺失）→ 后续步用固定门 %.0e；"
-                    "生成：python tools/gen_golden_train_loop.py --out <dir>\\probe "
-                    "--disc-len <同主 golden> --perturb-frac 0.000125 --perturb-delta 2e-4\n",
+        std::printf("[train-loop] no probe envelope (%s/probe missing) -> later steps use the fixed gate %.0e;"
+                    "generate: python tools/gen_golden_train_loop.py --out <dir>\\probe "
+                    "--disc-len <same as main golden> --perturb-frac 0.000125 --perturb-delta 2e-4\n",
                     golden_dir.c_str(), tol_later);
     }
 
@@ -1431,14 +1431,14 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
             break;
         }
         if (!ts->set_batch(b, &err)) {
-            std::printf("[train-loop] step %lld set_batch 失败: %s\n", (long long) i,
+            std::printf("[train-loop] step %lld set_batch failed: %s\n", (long long) i,
                         err.c_str());
             ++failed_steps;
             break;
         }
         TrainStepLosses L;
         if (!ts->run_step(&L, &err)) {
-            std::printf("[train-loop] step %lld run_step 失败: %s\n", (long long) i, err.c_str());
+            std::printf("[train-loop] step %lld run_step failed: %s\n", (long long) i, err.c_str());
             ++failed_steps;
             break;
         }
@@ -1470,9 +1470,9 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
         }
     }
 
-    std::printf("[train-loop] 轨迹对拍 %s（loss 项 %lld/%lld 通过；steps=%lld、T=%lld、"
-                "disc_len=%lld）\n",
-                failed_steps == 0 ? "通过" : "失败", (long long) (checked - failed_checks),
+    std::printf("[train-loop] trajectory comparison %s (loss items %lld/%lld passed; steps=%lld, T=%lld,"
+                "disc_len=%lld)\n",
+                failed_steps == 0 ? "PASSED" : "FAILED", (long long) (checked - failed_checks),
                 (long long) checked, (long long) ts->step_count(), (long long) cfg.frames,
                 (long long) cfg.disc_len);
     delete ts;

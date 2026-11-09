@@ -1,11 +1,11 @@
-// load.h —— M4-1 音频载入与重采样（rvc-prep 侧）
+// load.h -- M4-1 audio loading and resampling (rvc-prep side)
 //
-// 语义基准（官方 81eed5e train/preprocess.py:90 → infer/audio.py:310-335，RVC_AUDIO_FORCE_CPU=1）：
-//   ffmpeg -f f32le -ac 1 -ar <target_sr> 解码 + 下混 + 重采样。
-// C++ 侧：dr_wav 读 WAV（仅 WAV；非 WAV 请用户先转）→ 下混（立体声 1/√2）→ 自研 Kaiser 窗 sinc
-// 重采样（与 ffmpeg swresample 不可逐样本一致 → G4 统计门；见 docs/交接说明.md §4.8 D/G）。
+// Semantic baseline (official 81eed5e train/preprocess.py:90 -> infer/audio.py:310-335, RVC_AUDIO_FORCE_CPU=1):
+//   ffmpeg -f f32le -ac 1 -ar <target_sr> decode + downmix + resample.
+// C++ side: dr_wav reads WAV (WAV only; users must convert non-WAV first) -> downmix (stereo 1/sqrt(2)) -> in-house Kaiser-window sinc
+// resampling (not sample-exact vs ffmpeg swresample -> G4 statistical gate; see docs/handover.md §4.8 D/G).
 //
-// 精度链：本文件输出 double（与官方 lfilter 的 float64 运算衔接）。
+// Precision chain: this file outputs double (matching the official lfilter's float64 arithmetic).
 
 #pragma once
 
@@ -16,30 +16,30 @@
 
 namespace rvc_train::prep {
 
-// 单声道音频（double 样本）
+// Mono audio (double samples)
 struct MonoAudio {
     std::vector<double> samples;
     int sample_rate = 0;
 };
 
-// WAV → 单声道（各声道平均）→ 重采样到 target_sr；失败返回 false 并填 err
+// WAV -> mono (channel average) -> resample to target_sr; returns false and fills err on failure
 bool load_wav_mono(const std::string& path, int target_sr, MonoAudio* out, std::string* err);
 
-// 原始 F32 小端单声道文件（注入模式：golden 的 post-load 波形）
+// Raw F32 little-endian mono file (injection mode: golden post-load waveform)
 bool load_raw_f32_mono(const std::string& path, int sample_rate, MonoAudio* out, std::string* err);
 
-// F32 原始 dump（小端、连续）
+// Raw F32 dump (little-endian, contiguous)
 bool write_raw_f32(const std::string& path, const float* data, std::size_t count, std::string* err);
 bool write_raw_f32(const std::string& path, const std::vector<float>& data, std::string* err);
 
-// I32 原始 dump（小端、连续；M4-2 f0bin）
+// Raw I32 dump (little-endian, contiguous; M4-2 f0bin)
 bool write_raw_i32(const std::string& path, const int32_t* data, std::size_t count, std::string* err);
 bool write_raw_i32(const std::string& path, const std::vector<int32_t>& data, std::string* err);
 
-// double → float（截断为 F32，四舍五入到最近）
+// double -> float (narrowed to F32, round to nearest)
 std::vector<float> to_f32(const std::vector<double>& v);
 
-// 重采样（double 包装自研 sinc 重采样；仅 src != dst 时调用）
+// Resample (double wrapper around the in-house sinc resampler; called only when src != dst)
 std::vector<double> resample_mono_double(const std::vector<double>& in, int src_sr, int dst_sr);
 
 } // namespace rvc_train::prep

@@ -1,14 +1,14 @@
-// RVC-Train-GGML - M5-3 训练循环（src/train/trainer.h）
+// RVC-Train-GGML - M5-3 training loop (src/train/trainer.h)
 //
-// 职责：在 M5-2 的"一步训练核心"（TrainStep）之上提供可循环运行的最小训练栈：
-//   - bucket 数据循环（M5-3 v1 单桶图：bucket 可显式指定，或取 config buckets 最大者；
-//     超出图 T 的样本跳过并日志——多桶图缓存需 TrainStep 支持变 T 重建，留 M5-4/M7，见 Q25）
-//   - epoch 打乱（seed+epoch，官方 DistributedBucketSampler 的 v1 简化；尾部不足一个 batch 丢弃）
-//   - G/D 各一个 ExponentialLR（每 epoch 各步进一次，官方 train.py:283-288）
-//   - 日志（train.log + loss.csv）与周期性 checkpoint（traincpp checkpoint v2，含 RNG/调度器）
+// Role: provide the minimal loopable training stack on top of M5-2's "one-step training core" (TrainStep):
+//   - bucket data loop (M5-3 v1 single-bucket graph: bucket can be given explicitly, or take the largest of config buckets;
+//     samples exceeding graph T are skipped and logged -- multi-bucket graph caching needs TrainStep to support rebuilding with a varying T, deferred to M5-4/M7, see Q25)
+//   - epoch shuffling (seed+epoch, v1 simplification of the official DistributedBucketSampler; a trailing partial batch is dropped)
+//   - one ExponentialLR each for G/D (stepped once per epoch, official train.py:283-288)
+//   - logging (train.log + loss.csv) and periodic checkpoints (traincpp checkpoint v2, including RNG/scheduler)
 //
-// 语义基准：官方 81eed5e train/train.py + data_utils.py（见 `交接说明` §4.9 A/D）。
-// M5-3 门 G-5.3：N 步 loss 有限且趋势合理；checkpoint save→load 往返（参数/step/lr/RNG）一致。
+// Semantic baseline: official 81eed5e train/train.py + data_utils.py (see `docs/handover.md` §4.9 A/D).
+// M5-3 gate G-5.3: N steps with finite and sensibly trending loss; checkpoint save->load round trip (parameters/step/lr/RNG) consistent.
 #pragma once
 
 #include <cstdint>
@@ -27,32 +27,32 @@
 namespace rvc_train {
 namespace train {
 
-// 训练运行配置（M5 临时字段，M7 定稿）：
-//   - run.*（权重/缓存/输出/续训/设备/导出）由 CLI 或 config `run` 段提供；
-//   - train.*/data.*/model.* 可来自官方 configs/*.json（trainer_config_from_json）；
-//   - M7-1 起为自有 schema：train/data/model 顶层保留，新增可选 `run` 段（见 `交接说明` §4.11）。
+// Training run config (M5 provisional fields, finalized in M7):
+//   - run.* (weights/cache/output/resume/device/export) comes from the CLI or the config `run` section;
+//   - train.*/data.*/model.* may come from official configs/*.json (trainer_config_from_json);
+//   - since M7-1 this is our own schema: train/data/model top-levels are kept, plus an optional `run` section (see `docs/handover.md` §4.11).
 struct TrainerConfig {
-    // run（M7-1：可由 config `run` 段读取；CLI 覆盖优先）
-    std::string weights_g;        // 训练态 G GGUF（config: run.pretrain_g）
-    std::string weights_d;        // 训练态 D GGUF（config: run.pretrain_d）
-    std::string exp_dir;          // M4 缓存目录（config: run.exp）
-    std::string out_dir;          // 日志/checkpoint 输出目录（config: run.out）
-    std::string resume;           // 可选：载入 checkpoint 后继续（config: run.resume）
-    std::string export_run_json;  // 可选：运行摘要 JSON（config: run.export_run_json）
-    int64_t device = -1;          // 训练设备下标（-1=自动；config: run.device；CLI --device 优先）
-    int64_t export_every = 0;     // 每 N epoch 导出推理 GGUF（0=关；config: run.export_every；M7-4）
-    int64_t snapshot_keep = 0;    // epoch 快照保留数（0=全部保留；config: run.snapshot_keep；M7-4）
-    bool    scratch = false;      // 从零训练：按 model_cfg 生成随机初始化 G/D（config: run.scratch；M7-2）
+    // run (M7-1: can be read from the config `run` section; CLI overrides take precedence)
+    std::string weights_g;        // training-state G GGUF (config: run.pretrain_g)
+    std::string weights_d;        // training-state D GGUF (config: run.pretrain_d)
+    std::string exp_dir;          // M4 cache directory (config: run.exp)
+    std::string out_dir;          // log/checkpoint output directory (config: run.out)
+    std::string resume;           // optional: load this checkpoint and continue (config: run.resume)
+    std::string export_run_json;  // optional: run summary JSON (config: run.export_run_json)
+    int64_t device = -1;          // training device index (-1=auto; config: run.device; CLI --device takes precedence)
+    int64_t export_every = 0;     // export inference GGUF every N epochs (0=off; config: run.export_every; M7-4)
+    int64_t snapshot_keep = 0;    // number of epoch snapshots to keep (0=keep all; config: run.snapshot_keep; M7-4)
+    bool    scratch = false;      // train from scratch: generate randomly initialized G/D from model_cfg (config: run.scratch; M7-2)
     // train
     int64_t batch_size = 1;
     int64_t epochs = 1;
-    int64_t max_steps = 0;        // >0 时达到步数即停（冒烟/测试）
-    int64_t bucket = 0;           // 图 T（0 = 取 buckets 最大者）
-    int64_t disc_len = 0;         // D 输入长度（0 = 官方整段 segment_samples；>0 为测试尺度截断）
+    int64_t max_steps = 0;        // if >0, stop once this many steps are reached (smoke test/testing)
+    int64_t bucket = 0;           // graph T (0 = take the largest of buckets)
+    int64_t disc_len = 0;         // D input length (0 = official full segment_samples; >0 = test-scale truncation)
     int64_t log_interval = 50;
-    int64_t save_interval = 0;    // 每 N 个 epoch 存一次（0 = 仅收尾）
+    int64_t save_interval = 0;    // save once every N epochs (0 = only at the end)
     int64_t seed = 1234;
-    int64_t grad_accum = 1;       // 梯度累积步数（有效 batch = batch×accum；M7-3 实现）
+    int64_t grad_accum = 1;       // gradient accumulation steps (effective batch = batch×accum; implemented in M7-3)
     float lr = 1e-4f;
     float beta1 = 0.8f;
     float beta2 = 0.99f;
@@ -60,37 +60,37 @@ struct TrainerConfig {
     float weight_decay = 1e-2f;
     float c_mel = 45.0f;
     float c_kl = 1.0f;
-    float lr_decay = 0.999875f;   // ExponentialLR gamma（每 epoch）
+    float lr_decay = 0.999875f;   // ExponentialLR gamma (per epoch)
     std::vector<int64_t> buckets;
-    // data（官方 config data.*）
-    int64_t segment_frames = 32;     // z 帧 = segment_size/hop
-    int64_t segment_samples = 12800; // 官方 segment_size
+    // data (official config data.*)
+    int64_t segment_frames = 32;     // z frames = segment_size/hop
+    int64_t segment_samples = 12800; // official segment_size
     int64_t q_channels = 192;        // inter_channels
     int64_t n_fft = 2048;
     int64_t win = 2048;
     int64_t n_mels = 125;
     double sr = 40000.0;
     double fmin = 0.0;
-    double fmax = -1.0;              // <=0 表示 sr/2
+    double fmax = -1.0;              // <=0 means sr/2
     float log_clip = 2e-6f;
-    // 模型结构（config data/model 段推导；M7-2 scratch 用）；默认 v1-40k
-    model::ModelConfig model_cfg = model::default_model_config_v1_40k();   // kind 置 "G"；D 侧另派生
+    // Model structure (derived from the config data/model sections; used by M7-2 scratch); defaults to v1-40k
+    model::ModelConfig model_cfg = model::default_model_config_v1_40k();   // kind set to "G"; D is derived separately
 };
 
-// 读取训练 config（train/data/model + M7-1 新增可选 run 段）。
-// 兼容官方 configs/*.json（不含 run 段时按结构体默认值）；buckets/save_interval/disc_len 为 M5 扩展字段。
+// Read the training config (train/data/model + the optional run section added in M7-1).
+// Compatible with official configs/*.json (struct defaults apply when there is no run section); buckets/save_interval/disc_len are M5 extensions.
 bool trainer_config_from_json(const std::string& path, TrainerConfig* out, std::string* err);
-// 同上，但直接解析内存文本（供向导等价自检/测试使用）
+// Same as above, but parses in-memory text directly (for wizard equivalence self-tests/tests)
 bool trainer_config_from_json_text(const std::string& text, TrainerConfig* out, std::string* err);
 
-// M7-1：把配置序列化为自有 schema 文本（train/data/model/run），与 trainer_config_from_json 往返等价
+// M7-1: serialize the config to our own schema text (train/data/model/run); round-trip equivalent with trainer_config_from_json
 bool trainer_config_to_json(const TrainerConfig& cfg, std::string* out, std::string* err);
-// M7-1：把配置写入文件（自动创建父目录）
+// M7-1: write the config to a file (parent directories are created automatically)
 bool trainer_config_write_json(const TrainerConfig& cfg, const std::string& path, std::string* err);
-// M7-1：逐字段比较两配置（含 run 段）；不等价时把首个差异写入 *diff（可为 nullptr）
+// M7-1: compare two configs field by field (including the run section); on mismatch write the first difference to *diff (may be nullptr)
 bool trainer_config_equivalent(const TrainerConfig& a, const TrainerConfig& b, std::string* diff);
 
-// 训练循环（单桶图 v1）：create → run（或逐步 run_one_step）→ 收尾 checkpoint。
+// Training loop (single-bucket graph v1): create -> run (or step-by-step run_one_step) -> final checkpoint.
 class Trainer {
 public:
     static Trainer* create(const TrainerConfig& cfg, traincpp::Device* dev, std::string* err);
@@ -99,17 +99,17 @@ public:
     Trainer(const Trainer&) = delete;
     Trainer& operator=(const Trainer&) = delete;
 
-    // 完整循环：按 epochs/max_steps 运行，收尾保存 checkpoint（若有 out_dir）与 run JSON
+    // Full loop: run according to epochs/max_steps; save the final checkpoint (if out_dir is set) and the run JSON
     bool run(std::string* err);
-    // 单步推进（epoch 边界执行 scheduler；周期性 checkpoint 在 epoch 边界）
+    // Advance one step (scheduler stepped at epoch boundaries; periodic checkpointing at epoch boundaries)
     bool run_one_step(std::string* err);
 
-    // checkpoint（traincpp schema v2：G/D 双分区 + 共享 RNG + 每分区调度器）
+    // checkpoint (traincpp schema v2: G/D partitions + shared RNG + per-partition scheduler)
     bool save_checkpoint(const std::string& path, std::string* err);
     bool load_checkpoint(const std::string& path, std::string* err);
-    // 只读校验：文件内容与当前内存状态逐项一致（调用方保证内存状态即存档状态）
+    // Read-only verification: file contents match the current in-memory state item by item (caller guarantees the in-memory state is the archived state)
     bool verify_checkpoint_memory(const std::string& path, std::string* err);
-    // ---------------- 访问器（日志/测试/导出） ----------------
+    // ---------------- accessors (logging/testing/export) ----------------
     int64_t step_count() const;
     int64_t epoch_index() const { return epoch_; }
     int64_t batch_pos() const { return batch_pos_; }
@@ -121,7 +121,7 @@ public:
     float lr_d() const;
     uint64_t rng_state() const { return rng_.state; }
     bool finished() const { return finished_; }
-    // M5-4 性能采集
+    // M5-4 performance capture
     double first_step_ms() const { return first_step_ms_; }
     double mean_step_ms() const {
         return timed_steps_ > 0 ? total_step_ms_ / (double) timed_steps_ : 0.0;
@@ -144,13 +144,13 @@ private:
     bool open_logs(std::string* err);
     void log_step(const TrainStepLosses& losses, bool to_console);
     void write_run_json() const;
-    // M7-4：epoch 边界（epoch_ 已自增）——epoch 汇总行 + 周期性快照 + 每 N epoch 导出推理 GGUF
+    // M7-4: epoch boundary (epoch_ already incremented) -- epoch summary line + periodic snapshots + inference GGUF export every N epochs
     bool on_epoch_end(std::string* err);
     void write_epoch_summary();
     bool save_epoch_snapshot(int64_t epoch, std::string* err);
     bool prune_snapshots(std::string* err);
     bool export_epoch_inference(int64_t epoch, std::string* err);
-    // M7-5：续训元数据（旁挂 <ckpt>.meta.json）——写/样本指纹/载入校验
+    // M7-5: resume metadata (sidecar <ckpt>.meta.json) -- write/sample fingerprint/load validation
     ResumeMeta build_resume_meta() const;
     void compute_sample_fingerprint(int64_t* count, int64_t* total_frames, uint64_t* id_hash) const;
     bool validate_resume_meta(const ResumeMeta& m, std::string* err) const;
@@ -172,13 +172,13 @@ private:
     int64_t last_log_step_ = -1;
     bool finished_ = false;
 
-    std::vector<int64_t> sample_indices_;              // 可训练样本（Dataset 下标）
-    std::vector<std::vector<int64_t>> epoch_batches_;  // 当前 epoch 的批次（长度 = steps_per_epoch_）
+    std::vector<int64_t> sample_indices_;              // trainable samples (Dataset indices)
+    std::vector<std::vector<int64_t>> epoch_batches_;  // batches of the current epoch (length = steps_per_epoch_)
     bool epoch_batches_valid_ = false;
     int64_t epoch_batches_epoch_ = -1;
 
     TrainStepLosses last_{};
-    // M5-4 性能采集（步时 + 前 N 步 loss；不影响数值路径）
+    // M5-4 performance capture (step time + first N losses; does not affect the numerical path)
     static constexpr int64_t kFirstLossCount = 10;
     double first_step_ms_ = 0.0;
     double total_step_ms_ = 0.0;
@@ -187,7 +187,7 @@ private:
     std::string ckpt_path_;
     std::string log_path_;
     std::string csv_path_;
-    std::string epochs_csv_path_;  // M7-4：per-epoch 汇总
+    std::string epochs_csv_path_;  // M7-4: per-epoch summary
     std::ofstream log_file_;
     std::ofstream csv_file_;
     std::ofstream epochs_file_;
