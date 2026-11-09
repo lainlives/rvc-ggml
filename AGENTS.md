@@ -72,7 +72,48 @@ MSVC gets it transitively).
 Training side under MinGW: all 114 C++ translation units compile (verified 2026-11), but the
 final `rvc-prep.exe` link fails on `_dupenv_s` (MSVC/UCRT-only API used unconditionally in
 `main_prep.cpp` and several selftests) — add a small UCRT shim via `-include` if you need the
-link. `rvc-train.exe` itself links only after that. Native Linux has not been attempted yet.
+link. `rvc-train.exe` itself links only after that.
+
+## Linux porting status (audit 2026-11)
+
+Native Linux (GCC, CPU-only, `-DRVC_VULKAN=OFF`) trial builds were run: ggml, traincpp and all
+source files except those listed below already compile. Neither ggml nor traincpp uses
+`windows.h`; both CMake projects configure cleanly with GCC (pass
+`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++` if a stale `CC`/`CXX` env var points at a
+missing compiler — the VS Code env in the reference machine does).
+
+Worklist (audit only — not yet implemented):
+
+- **`rvc-ggml/src/main.cpp`**: guard `#include <windows.h>` and `SetConsoleOutputCP/SetConsoleCP`
+  with `#ifdef _WIN32`; make the two `_putenv_s` calls portable (`setenv` on POSIX).
+- **`rvc-ggml/src/gguf/gguf_model.cpp`**: add `#include <cmath>` (`std::sqrt` is used without
+  it — this is also the source of the MinGW `-include cmath` workaround above); make
+  `_wfopen`/`_fseeki64` portable (`fopen` + `fseeko`, `_FILE_OFFSET_BITS=64`).
+- **`rvc-train-ggml/src/main_prep.cpp`**: guard `windows.h`, `GetConsoleProcessList` (pause
+  helper — no-op on Linux) and `SetConsoleOutputCP/CP`; replace `_dupenv_s` (`env_present`) and
+  `_putenv_s`.
+- **`rvc-train-ggml/src/main_train.cpp`**: guard the `pause_if_sole_console` body
+  (`GetConsoleProcessList`; the console code-page block is already `#ifdef _WIN32`).
+- **`rvc-train-ggml/src/cli/train_wizard.cpp`**: guard `windows.h`; port `current_exe_dir()`
+  (`/proc/self/exe` fallback) and the `CreateProcessW` spawn (`std::system`/posix_spawn);
+  fix `dir + "\\" + name` joins and the `"…\\dataset.json"` message.
+- **`_dupenv_s` call sites**: `src/model/selftest.cpp` (3x), `src/train/loss_selftest.cpp`,
+  `src/train/train_step_selftest.cpp` — replace with a shared portable env helper.
+- **Backslash path joins** (runtime-broken on Linux): `src/train/trainer.cpp:41`,
+  `src/train/resume_selftest.cpp:46`, `src/train/scratch_selftest.cpp:32`,
+  `src/main_train.cpp:186`, plus two message strings (`train_wizard.cpp:368`,
+  `train_step_selftest.cpp:1413`).
+- **`#pragma warning`** without `#ifdef _MSC_VER` in `src/train/train_step.cpp` and
+  `src/train/grad_accum_selftest.cpp` (GCC ignores these silently by default; guard for
+  cleanliness).
+
+Suggested approach: one shared `env_get`/`env_present`/`env_set` POSIX+Win32 helper plus
+`#ifdef _WIN32` around the remaining islands, keeping Windows behavior unchanged. Verify with
+the MinGW cross-build (no Windows regressions) and a native GCC build (CPU first; Vulkan on
+Linux needs only Vulkan headers + `glslc`, both present on the reference machine).
+`scripts/dev_build.ps1` is MSVC/vcvars-only — on Linux configure with plain CMake;
+`scripts/train_pipeline.ps1` is a pure driver that may run under `pwsh`, but a bash equivalent
+is the cleaner Linux path.
 
 ## Running
 
