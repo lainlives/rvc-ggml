@@ -18,8 +18,8 @@ A pure C++ / [ggml](https://github.com/ggml-org/ggml) implementation of [RVC (Re
 
 ## System requirements
 
-- Windows 10/11 x64 (the currently verified primary platform)
-- CMake ≥ 3.20, MSVC (Visual Studio C++ toolset), Ninja
+- Windows 10/11 x64 (primary release platform) or Linux x86-64 (native builds verified on both; see `AGENTS.md`)
+- CMake ≥ 3.20, Ninja, and either MSVC (Visual Studio C++ toolset) or GCC/Clang
 - [Vulkan SDK](https://vulkan.lunarg.com/) (including glslc; without it the build automatically falls back to pure CPU)
 - A GPU supporting Vulkan 1.2 (4 GB of VRAM/shared memory as a starting point); with no GPU the CPU backend can be used
 
@@ -35,11 +35,19 @@ powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1
 # When cmake/ninja are not on PATH, the script automatically uses the versions bundled with Visual Studio
 ```
 
-Or manually with CMake:
+Or manually with CMake (Windows):
 
 ```powershell
 cmake -S rvc-train-ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+```
+
+On Linux (Vulkan is detected automatically; add `-DRVC_VULKAN=OFF -DTRC_VULKAN=OFF` for CPU-only;
+binaries land in `rvc-train-ggml/build/bin/` and have no `.exe` suffix):
+
+```bash
+cmake -S rvc-train-ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
 The ggml dependency is resolved automatically: FetchContent pulls official ggml v0.23.0 and then applies this project's patch (see `rvc-ggml/patches/`); you can also point at a local copy with `-DRVC_GGML_DIR=<local ggml source>`.

@@ -54,66 +54,51 @@ powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1 -A
 - Language level: C++20; MSVC `/utf-8` everywhere; `/W3` for inference targets, `/W4` for
   training targets; MSVC static runtime for `rvc-ggml`.
 
-### Linux cross-check (optional, for quick syntax/build feedback)
+### MinGW cross-check (Windows target from Linux, optional)
 
-A MinGW cross-build of the inference side works for CPU-only checks (verified 2026-11):
+A MinGW cross-build of both projects works (verified 2026-11):
 
 ```bash
-cmake -S rvc-ggml -B /tmp/rvc-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DRVC_VULKAN=OFF \
-  -DCMAKE_TOOLCHAIN_FILE=<mingw-toolchain.cmake> \
-  -DCMAKE_CXX_FLAGS="-include cmath -include cstring -include algorithm -include cstdint -include cstdio -include memory -include vector -include limits"
-cmake --build /tmp/rvc-build
+cmake -S rvc-ggml -B /tmp/rvc-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=<mingw-toolchain.cmake> -DRVC_VULKAN=OFF -DRVC_CUDA=OFF
+cmake --build /tmp/rvc-build -j
 ```
 
-`-DCMAKE_CXX_FLAGS="... -include cmath"` compensates for a known portability quirk
-(`rvc-ggml/src/gguf/gguf_model.cpp` uses `std::sqrt` without including `<cmath>`;
-MSVC gets it transitively).
+The training side additionally needs a one-line shim for the traincpp submodule
+(`std::aligned_alloc` is missing from MinGW's libstdc++): put a header on the include path
+that defines it via `__mingw_aligned_malloc` and pass `-DCMAKE_CXX_FLAGS="-include <shim>.h"`.
 
-Training side under MinGW: all 114 C++ translation units compile (verified 2026-11), but the
-final `rvc-prep.exe` link fails on `_dupenv_s` (MSVC/UCRT-only API used unconditionally in
-`main_prep.cpp` and several selftests) — add a small UCRT shim via `-include` if you need the
-link. `rvc-train.exe` itself links only after that.
+## Linux support (implemented 2026-11)
 
-## Linux porting status (audit 2026-11)
+Both projects build and run natively on Linux x86-64 (GCC), CPU and Vulkan; Windows behavior is
+unchanged (every Windows-only island is behind `#ifdef _WIN32`, and the MinGW cross-build still
+passes). Verified 2026-11 with Mesa RADV (RX 9070): `RVC-GGML --list-devices`, `rvc-prep
+--selftest` and `rvc-train --selftest` pass on both CPU and Vulkan.
 
-Native Linux (GCC, CPU-only, `-DRVC_VULKAN=OFF`) trial builds were run: ggml, traincpp and all
-source files except those listed below already compile. Neither ggml nor traincpp uses
-`windows.h`; both CMake projects configure cleanly with GCC (pass
-`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++` if a stale `CC`/`CXX` env var points at a
-missing compiler — the VS Code env in the reference machine does).
+```bash
+# Vulkan is picked up automatically when an SDK is installed; force CPU with
+# -DRVC_VULKAN=OFF / -DTRC_VULKAN=OFF. Binaries have no .exe suffix on Linux.
+cmake -S rvc-ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 
-Worklist (audit only — not yet implemented):
+cmake -S rvc-train-ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
 
-- **`rvc-ggml/src/main.cpp`**: guard `#include <windows.h>` and `SetConsoleOutputCP/SetConsoleCP`
-  with `#ifdef _WIN32`; make the two `_putenv_s` calls portable (`setenv` on POSIX).
-- **`rvc-ggml/src/gguf/gguf_model.cpp`**: add `#include <cmath>` (`std::sqrt` is used without
-  it — this is also the source of the MinGW `-include cmath` workaround above); make
-  `_wfopen`/`_fseeki64` portable (`fopen` + `fseeko`, `_FILE_OFFSET_BITS=64`).
-- **`rvc-train-ggml/src/main_prep.cpp`**: guard `windows.h`, `GetConsoleProcessList` (pause
-  helper — no-op on Linux) and `SetConsoleOutputCP/CP`; replace `_dupenv_s` (`env_present`) and
-  `_putenv_s`.
-- **`rvc-train-ggml/src/main_train.cpp`**: guard the `pause_if_sole_console` body
-  (`GetConsoleProcessList`; the console code-page block is already `#ifdef _WIN32`).
-- **`rvc-train-ggml/src/cli/train_wizard.cpp`**: guard `windows.h`; port `current_exe_dir()`
-  (`/proc/self/exe` fallback) and the `CreateProcessW` spawn (`std::system`/posix_spawn);
-  fix `dir + "\\" + name` joins and the `"…\\dataset.json"` message.
-- **`_dupenv_s` call sites**: `src/model/selftest.cpp` (3x), `src/train/loss_selftest.cpp`,
-  `src/train/train_step_selftest.cpp` — replace with a shared portable env helper.
-- **Backslash path joins** (runtime-broken on Linux): `src/train/trainer.cpp:41`,
-  `src/train/resume_selftest.cpp:46`, `src/train/scratch_selftest.cpp:32`,
-  `src/main_train.cpp:186`, plus two message strings (`train_wizard.cpp:368`,
-  `train_step_selftest.cpp:1413`).
-- **`#pragma warning`** without `#ifdef _MSC_VER` in `src/train/train_step.cpp` and
-  `src/train/grad_accum_selftest.cpp` (GCC ignores these silently by default; guard for
-  cleanliness).
-
-Suggested approach: one shared `env_get`/`env_present`/`env_set` POSIX+Win32 helper plus
-`#ifdef _WIN32` around the remaining islands, keeping Windows behavior unchanged. Verify with
-the MinGW cross-build (no Windows regressions) and a native GCC build (CPU first; Vulkan on
-Linux needs only Vulkan headers + `glslc`, both present on the reference machine).
-`scripts/dev_build.ps1` is MSVC/vcvars-only — on Linux configure with plain CMake;
-`scripts/train_pipeline.ps1` is a pure driver that may run under `pwsh`, but a bash equivalent
-is the cleaner Linux path.
+Port notes:
+- Shared helpers: `rvc-train-ggml/src/common/platform.h` (`env_present`/`env_get`/`env_set`,
+  `path_sep`); inference uses `utils::set_env`. Path joins use the native separator.
+- `rvc-train-ggml/CMakeLists.txt` wraps the traincpp backend archives in
+  `$<LINK_GROUP:RESCAN,...>` — GNU ld is single-pass and needs it for the core↔backend cycle;
+  MSVC is unaffected.
+- POSIX: the wizard locates `rvc-prep` (no `.exe`) and spawns it with `std::system`; Windows
+  keeps `CreateProcessW` + `rvc-prep.exe`.
+- ggml's `vulkan-shaders-gen` nested configure inherits `CC`/`CXX` from the environment; export
+  working compilers (or configure with `-DCMAKE_C_COMPILER`/`CXX`) if a shell sets broken ones.
+- Still Windows-first: `scripts/dev_build.ps1` (MSVC/vcvars) and `scripts/train_pipeline.ps1`
+  (PowerShell; may work under `pwsh`, but a bash driver is not written yet).
+- The traincpp submodule still prints some Chinese log lines (device names/memory tables) —
+  upstream cosmetic issue, do not translate third_party.
 
 ## Running
 
