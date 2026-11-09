@@ -53,6 +53,7 @@
 #include "traincpp/traincpp.h"
 
 #include "cli/train_wizard.h"
+#include "common/platform.h"
 #include "export/mem_to_train_gguf.h"
 #include "export/model_gguf.h"
 
@@ -183,7 +184,7 @@ std::string join_path_simple(const std::string& dir, const std::string& name) {
     if (last == '/' || last == '\\') {
         return dir + name;
     }
-    return dir + "\\" + name;
+    return dir + rvc_train::platform::path_sep() + name;
 }
 
 // Create a Trainer from the config and run the full loop (shared by --train and --interactive).
@@ -635,6 +636,7 @@ int cmd_export_gguf(const std::string& in_path, const std::string& out_path) {
 // M8-3: on double-click launch (this process owns the console), wait for one Enter before exiting so the window does not flash-close before the output is visible.
 // when launched from an existing terminal (cmd/PowerShell/script) the console is shared by multiple processes, so do not pause (does not block scripts).
 static int pause_if_sole_console(int rc) {
+#ifdef _WIN32
     DWORD pids[2] = {0, 0};
     if (GetConsoleProcessList(pids, 2) == 1) {
         std::printf("\nPress Enter to exit...");
@@ -642,6 +644,7 @@ static int pause_if_sole_console(int rc) {
         std::string line;
         std::getline(std::cin, line);
     }
+#endif
     return rc;
 }
 

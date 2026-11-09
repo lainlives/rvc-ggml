@@ -6,6 +6,7 @@
 #include "train/trainer.h"
 
 #include "common/json.h"
+#include "common/platform.h"
 
 #include "export/mem_to_train_gguf.h"
 #include "export/model_gguf.h"
@@ -38,7 +39,7 @@ std::string join_path(const std::string& dir, const std::string& name) {
     if (last == '/' || last == '\\') {
         return dir + name;
     }
-    return dir + "\\" + name;
+    return dir + platform::path_sep() + name;
 }
 
 double json_num(const common::JsonValue* obj, const char* key, double default_value) {

@@ -1,6 +1,7 @@
 // RVC-Train-GGML - forward comparison harness implementation (src/model/selftest.cpp)
 #include "model/selftest.h"
 
+#include "common/platform.h"
 #include "model/dec.h"
 #include "model/discriminator.h"
 #include "model/emb.h"
@@ -257,11 +258,7 @@ const Entry* find_entry(const std::string& module) {
 
 // Debug switch RVCT_DEBUG_ALLOC=1: print the total context tensor allocation and Top-15 (to locate over-limit/huge tensors)
 void debug_print_alloc(const Context* ctx) {
-    char*  dbg_env = nullptr;
-    size_t dbg_len = 0;
-    _dupenv_s(&dbg_env, &dbg_len, "RVCT_DEBUG_ALLOC");
-    const bool debug_alloc = (dbg_env != nullptr);
-    free(dbg_env);
+    const bool debug_alloc = platform::env_present("RVCT_DEBUG_ALLOC");
     if (!debug_alloc) {
         return;
     }
@@ -793,13 +790,8 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     // switches to graph-level liveness allocation (off by default, keeping the existing backward comparison behavior unchanged).
     bool graph_alloc = false;
     {
-        char*  env = nullptr;
-        size_t env_len = 0;
-        _dupenv_s(&env, &env_len, "RVCT_BWD_GRAPH_ALLOC");
-        if (env != nullptr) {
-            graph_alloc = (env[0] == '1');
-            free(env);
-        }
+        const std::string env = platform::env_get("RVCT_BWD_GRAPH_ALLOC");
+        graph_alloc = (!env.empty() && env[0] == '1');
     }
     buf = graph_alloc ? buffer_alloc_graph_tensors(graph, dev->default_buffer_type())
                       : buffer_alloc_ctx_tensors(ctx, dev->default_buffer_type());
@@ -944,14 +936,8 @@ int run_single_backward(const std::string& weights_path, const std::string& gold
     int gc_failed  = 0;
     if (!gradcheck_spec.empty()) {
         float gc_eps = kGradcheckEps;
-        {
-            char*  eps_env = nullptr;
-            size_t eps_len = 0;
-            _dupenv_s(&eps_env, &eps_len, "RVCT_GRADCHECK_EPS");
-            if (eps_env != nullptr) {
-                gc_eps = (float) std::atof(eps_env);
-                free(eps_env);
-            }
+        if (platform::env_present("RVCT_GRADCHECK_EPS")) {
+            gc_eps = (float) std::atof(platform::env_get("RVCT_GRADCHECK_EPS").c_str());
         }
         struct GcItem {
             std::string name;

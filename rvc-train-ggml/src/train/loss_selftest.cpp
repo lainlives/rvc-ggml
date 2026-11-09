@@ -8,6 +8,7 @@
 #include "train/loss_selftest.h"
 
 #include "common/json.h"
+#include "common/platform.h"
 #include "model/selftest.h"
 #include "train/losses.h"
 #include "train/stft_mel.h"
@@ -628,11 +629,7 @@ int run_single_loss(const std::string& golden_dir, const std::string& module,
 
     // RVCT_DEBUG_LOSS=1: print stft/mel intermediates (for localization)
     {
-        char*  dbg_env = nullptr;
-        size_t dbg_len = 0;
-        _dupenv_s(&dbg_env, &dbg_len, "RVCT_DEBUG_LOSS");
-        if (dbg_env != nullptr) {
-            free(dbg_env);
+        if (platform::env_present("RVCT_DEBUG_LOSS")) {
             auto dump = [](const char* tag, const Tensor* t, int64_t from, int64_t n) {
                 std::printf("[dbg] %s ne=[%lld,%lld,%lld,%lld] :", tag,
                             (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2],

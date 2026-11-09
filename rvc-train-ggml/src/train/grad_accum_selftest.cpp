@@ -29,10 +29,14 @@ namespace {
 
 // Environment variable switch (MSVC getenv triggers C4996, locally suppressed)
 bool env_flag(const char* name) {
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#endif
     const char* v = std::getenv(name);
+#if defined(_MSC_VER)
 #pragma warning(pop)
+#endif
     return v != nullptr && v[0] != '\0';
 }
 

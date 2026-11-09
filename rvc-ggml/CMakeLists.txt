@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(NOT MSVC)
+    # 64-bit file offsets on POSIX (GGUF models larger than 2 GB)
+    add_compile_definitions(_FILE_OFFSET_BITS=64)
+endif()
+
 if(MSVC)
     add_compile_options(/utf-8)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

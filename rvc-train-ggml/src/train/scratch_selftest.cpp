@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "common/platform.h"
 #include "export/mem_to_train_gguf.h"
 #include "model/config.h"
 #include "model/scratch.h"
@@ -29,7 +30,7 @@ std::string join(const std::string& dir, const std::string& name) {
         return name;
     }
     const char last = dir.back();
-    return (last == '/' || last == '\\') ? dir + name : dir + "\\" + name;
+    return (last == '/' || last == '\\') ? dir + name : dir + platform::path_sep() + name;
 }
 
 bool parse_hashes(const std::string& path,

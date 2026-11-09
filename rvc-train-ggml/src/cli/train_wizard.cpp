@@ -5,6 +5,7 @@
 // M8-1b: dual-mode data entry - existing cache directory / raw audio directory (spawn an rvc-prep.exe subprocess to preprocess).
 #include "cli/train_wizard.h"
 
+#include "common/platform.h"
 #include "prep/cache.h"
 #include "traincpp/traincpp.h"
 
@@ -18,6 +19,7 @@
 #include <string>
 #include <system_error>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -25,6 +27,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <sys/wait.h>
+#endif
 
 namespace rvc_train {
 namespace train {
@@ -230,20 +235,28 @@ bool confirm_yes(const std::string& yn) {
     return yn == "y" || yn == "Y" || yn == "yes" || yn == "YES" || yn == "是";
 }
 
-// M8-1b: directory of this process's exe (used to locate rvc-prep.exe in the same directory).
+// M8-1b: directory of this process's exe (used to locate the rvc-prep executable in the same directory).
 std::string current_exe_dir() {
+#ifdef _WIN32
     wchar_t buf[MAX_PATH];
     const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) {
         return {};
     }
-    std::error_code ec;
     const std::filesystem::path p(buf);
+#else
+    std::error_code link_ec;
+    const std::filesystem::path p = std::filesystem::read_symlink("/proc/self/exe", link_ec);
+    if (link_ec || p.empty()) {
+        return {};
+    }
+#endif
+    std::error_code ec;
     const std::filesystem::path dir = p.parent_path();
     return std::filesystem::is_directory(dir, ec) ? dir.string() : std::string();
 }
 
-// M8-1b: concatenate directory + file name (Windows style).
+// M8-1b: concatenate directory + file name using the native separator.
 std::string join_simple(const std::string& dir, const std::string& name) {
     if (dir.empty()) {
         return name;
@@ -252,22 +265,28 @@ std::string join_simple(const std::string& dir, const std::string& name) {
     if (last == '/' || last == '\\') {
         return dir + name;
     }
-    return dir + "\\" + name;
+    return dir + platform::path_sep() + name;
 }
 
-// M8-1b: locate rvc-prep.exe - prefer this exe's directory, then the working directory; return empty if not found.
+#ifdef _WIN32
+constexpr const char* kPrepExeName = "rvc-prep.exe";
+#else
+constexpr const char* kPrepExeName = "rvc-prep";
+#endif
+
+// M8-1b: locate the rvc-prep executable - prefer this exe's directory, then the working directory; return empty if not found.
 std::string find_rvc_prep_exe(std::ostream& out) {
     std::error_code ec;
     const std::string candidates[2] = {
-        join_simple(current_exe_dir(), "rvc-prep.exe"),
-        std::string("rvc-prep.exe"),
+        join_simple(current_exe_dir(), kPrepExeName),
+        std::string(kPrepExeName),
     };
     for (const std::string& c : candidates) {
         if (std::filesystem::is_regular_file(c, ec)) {
             return c;
         }
     }
-    out << "  rvc-prep.exe not found (tried this program's directory and the current directory).\n";
+    out << "  " << kPrepExeName << " not found (tried this program's directory and the current directory).\n";
     return {};
 }
 
@@ -311,8 +330,9 @@ std::string find_latest_checkpoint(const std::string& out_dir) {
     return best.empty() ? std::string() : best.string();
 }
 
-// M8-1b: spawn an rvc-prep.exe subprocess to run preprocessing (the two Vulkan backends live in separate processes, per the isolation rule).
-// use CreateProcessW (avoids cmd quote-parsing issues and natively supports non-ASCII paths); inherits the console for live output.
+// M8-1b: spawn an rvc-prep subprocess to run preprocessing (the two Vulkan backends live in separate processes, per the isolation rule).
+// Windows: CreateProcessW (avoids cmd quote-parsing issues and natively supports non-ASCII paths); POSIX: std::system.
+// inherits the console for live output.
 // success requires exit code 0 and a dataset.json appearing in the cache.
 bool run_prep_subprocess(const std::string& exe, const std::string& input, int sr,
                          const std::string& version, const std::string& rmvpe,
@@ -330,6 +350,7 @@ bool run_prep_subprocess(const std::string& exe, const std::string& input, int s
     std::printf("[rvc-train] running preprocessing (may take a while):\n  %s\n", cmd.c_str());
     std::fflush(stdout);
 
+#ifdef _WIN32
     // UTF-8 -> UTF-16 (required when the command line contains non-ASCII paths)
     const int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
     if (wlen <= 0) {
@@ -347,7 +368,7 @@ bool run_prep_subprocess(const std::string& exe, const std::string& input, int s
     if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si,
                         &pi)) {
         if (err != nullptr) {
-            *err = "failed to start rvc-prep.exe (GetLastError=" + std::to_string(GetLastError()) + ")";
+            *err = "failed to start " + std::string(kPrepExeName) + " (GetLastError=" + std::to_string(GetLastError()) + ")";
         }
         return false;
     }
@@ -356,16 +377,22 @@ bool run_prep_subprocess(const std::string& exe, const std::string& input, int s
     GetExitCodeProcess(pi.hProcess, &exit_code);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    if (exit_code != 0) {
+    const int exit_code_plain = static_cast<int>(exit_code);
+#else
+    // POSIX: spawn through the shell and wait; WEXITSTATUS decodes the wait status.
+    const int status = std::system(cmd.c_str());
+    const int exit_code_plain = (status == -1) ? -1 : (WIFEXITED(status) ? WEXITSTATUS(status) : 1);
+#endif
+    if (exit_code_plain != 0) {
         if (err != nullptr) {
-            *err = "rvc-prep exit code " + std::to_string(exit_code) + " (preprocessing failed, see the log above)";
+            *err = std::string(kPrepExeName) + " exit code " + std::to_string(exit_code_plain) + " (preprocessing failed, see the log above)";
         }
         return false;
     }
     std::error_code ec;
     if (!std::filesystem::is_regular_file(std::filesystem::path(exp_dir) / "dataset.json", ec)) {
         if (err != nullptr) {
-            *err = "preprocessing command succeeded but did not produce " + exp_dir + "\\dataset.json";
+            *err = "preprocessing command succeeded but did not produce " + exp_dir + platform::path_sep() + "dataset.json";
         }
         return false;
     }

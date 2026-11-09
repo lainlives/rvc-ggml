@@ -38,11 +38,14 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <ggml.h>
 
 #include "common/json.h"
+#include "common/platform.h"
 #include "cli/prep_wizard.h"
 #include "engine.h"
 #include "export/index_gguf.h"
@@ -58,17 +61,6 @@
 namespace fs = std::filesystem;
 
 namespace {
-
-// Whether an environment variable exists (use _dupenv_s instead of getenv under MSVC /W4 to avoid C4996)
-bool env_present(const char* name) {
-    char*  value = nullptr;
-    size_t size  = 0;
-    if (_dupenv_s(&value, &size, name) == 0 && value != nullptr) {
-        std::free(value);
-        return true;
-    }
-    return false;
-}
 
 void print_devices() {
     const std::vector<rvc::GpuDeviceInfo> devs = rvc::list_gpu_devices();
@@ -1024,6 +1016,8 @@ int run_interactive_prep(Args& args) {
 // M8-3: when launched by double-click (this process owns the console), wait for one Enter before exit so the window does not flash-close.
 // When launched from an existing terminal (cmd/PowerShell/script), the console is shared by multiple processes, so do not pause (does not block scripts).
 static int pause_if_sole_console(int rc) {
+#ifdef _WIN32
+    // Pause only when this process owns the console (double-click launch), so scripts are not blocked.
     DWORD pids[2] = {0, 0};
     if (GetConsoleProcessList(pids, 2) == 1) {
         std::printf("\nPress Enter to exit...");
@@ -1031,6 +1025,7 @@ static int pause_if_sole_console(int rc) {
         std::string line;
         std::getline(std::cin, line);
     }
+#endif
     return rc;
 }
 
@@ -1040,19 +1035,21 @@ int main(int argc, char** argv) {
 }
 
 int run_main(int argc, char** argv) {
+#ifdef _WIN32
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
+#endif
 
     // Q4: same as the RVC-GGML main program, set Intel driver workaround switches before initializing the ggml backend
     // (RVC-GGML src\main.cpp:912-923 is the standard practice):
     //   - the integer dot product path may produce NaN/zero output on repeated graph executions of quantized models → disabled by default;
     //   - the Vulkan fp16 compute path significantly amplifies error (P4 measured SNR 60dB→33dB) → disabled by default.
     // RVC_VK_ENABLE_INTDOT / RVC_VK_ENABLE_F16 keep their explicit restore semantics.
-    if (!env_present("RVC_VK_ENABLE_INTDOT")) {
-        _putenv_s("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
+    if (!rvc_train::platform::env_present("RVC_VK_ENABLE_INTDOT")) {
+        rvc_train::platform::env_set("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
     }
-    if (!env_present("RVC_VK_ENABLE_F16")) {
-        _putenv_s("GGML_VK_DISABLE_F16", "1");
+    if (!rvc_train::platform::env_present("RVC_VK_ENABLE_F16")) {
+        rvc_train::platform::env_set("GGML_VK_DISABLE_F16", "1");
     }
 
     Args args;

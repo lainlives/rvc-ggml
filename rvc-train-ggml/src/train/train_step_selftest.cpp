@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include "common/platform.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -931,12 +932,8 @@ int run_impl(const std::string& weights_g, const std::string& weights_d,
 
     // Optional diagnostic: RVCT_DUMP_TRAINSTEP=DIR dumps the C++ ΔW and grad_acc to disk (for element-wise localization)
     {
-        char*  dir_env = nullptr;
-        size_t dir_len = 0;
-        _dupenv_s(&dir_env, &dir_len, "RVCT_DUMP_TRAINSTEP");
-        if (dir_env != nullptr && dir_env[0] != '\0') {
-            const std::string base = dir_env;
-            free(dir_env);
+        const std::string base = platform::env_get("RVCT_DUMP_TRAINSTEP");
+        if (!base.empty()) {
             auto dump_f32 = [&base](const char* sub, const std::string& name, const float* p,
                                     size_t n) {
                 std::string s = std::string(sub) + "_" + name;
@@ -1410,7 +1407,7 @@ int run_train_loop_impl(const std::string& weights_g, const std::string& weights
             step_tol[(size_t) i] = (i == 0) ? tol_first : tol_later;
         }
         std::printf("[train-loop] no probe envelope (%s/probe missing) -> later steps use the fixed gate %.0e;"
-                    "generate: python tools/gen_golden_train_loop.py --out <dir>\\probe "
+                    "generate: python tools/gen_golden_train_loop.py --out <dir>/probe "
                     "--disc-len <same as main golden> --perturb-frac 0.000125 --perturb-delta 2e-4\n",
                     golden_dir.c_str(), tol_later);
     }

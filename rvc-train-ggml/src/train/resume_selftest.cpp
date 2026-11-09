@@ -3,6 +3,7 @@
 // Gate G-7.5: resuming across epochs matches uninterrupted training bit-for-bit; changing config/sample set errors out explicitly.
 #include "train/resume_selftest.h"
 
+#include "common/platform.h"
 #include "train/resume_meta.h"
 #include "train/trainer.h"
 
@@ -43,7 +44,7 @@ std::string join_path_simple(const std::string& dir, const std::string& name) {
     if (last == '/' || last == '\\') {
         return dir + name;
     }
-    return dir + "\\" + name;
+    return dir + platform::path_sep() + name;
 }
 
 struct StepState {

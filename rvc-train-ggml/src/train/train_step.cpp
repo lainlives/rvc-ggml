@@ -670,10 +670,14 @@ bool TrainStep::set_wave(const float* wave, int64_t n, std::string* err) {
 
 // Environment variable switch (under MSVC getenv triggers C4996, locally suppressed; for debug output only)
 static bool env_flag(const char* name) {
+#if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#endif
     const char* v = std::getenv(name);
+#if defined(_MSC_VER)
 #pragma warning(pop)
+#endif
     return v != nullptr && v[0] != '\0';
 }
 

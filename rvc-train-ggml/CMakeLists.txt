@@ -133,7 +133,19 @@ add_executable(rvc-train
     src/cli/train_wizard.cpp
 )
 target_include_directories(rvc-train PRIVATE src)
-target_link_libraries(rvc-train PRIVATE traincpp::traincpp)
+if(NOT MSVC AND TARGET traincpp_cpu AND TARGET traincpp_core)
+    # GNU ld is single-pass and does not rescan archives: traincpp_core's backend
+    # registry references cpu_device()/vulkan_device() from the backend libs while
+    # those libs depend on traincpp_core (an archive cycle). MSVC LINK rescans
+    # libraries, GNU ld (Linux/MinGW) needs an explicit RESCAN link group.
+    if(TARGET traincpp_vulkan)
+        target_link_libraries(rvc-train PRIVATE "$<LINK_GROUP:RESCAN,traincpp_cpu,traincpp_vulkan,traincpp_core>")
+    else()
+        target_link_libraries(rvc-train PRIVATE "$<LINK_GROUP:RESCAN,traincpp_cpu,traincpp_core>")
+    endif()
+else()
+    target_link_libraries(rvc-train PRIVATE traincpp::traincpp)
+endif()
 if(MSVC)
     target_compile_options(rvc-train PRIVATE /W4)
 endif()

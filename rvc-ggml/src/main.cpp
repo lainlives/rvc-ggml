@@ -2,7 +2,9 @@
 // ggml (Vulkan/CUDA/CPU) based RVC voice conversion inference
 // P0 stage: CLI skeleton + audio pipeline self-test
 
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -906,20 +908,22 @@ namespace {
 } // namespace
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
+#endif
 
     // On Intel drivers, the Vulkan integer dot-product path may produce NaN/zero output when a quantized model runs the graph repeatedly
     // (observed in testing; reproduced on both ggml 0.18 and 0.23); disabled by default, re-enable with RVC_VK_ENABLE_INTDOT=1.
     if (!getenv("RVC_VK_ENABLE_INTDOT")) {
-        _putenv_s("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
+        utils::set_env("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "1");
     }
 
     // The Vulkan fp16 compute path (including fp16 accumulation in im2col/GEMM) significantly amplifies error:
     // In P4 testing, audio SNR dropped from ~60dB to ~33dB (corr still meets spec, but perceptual risk increases),
     // and on some Intel integrated GPUs there is almost no speed difference; disabled by default, re-enable with RVC_VK_ENABLE_F16=1.
     if (!getenv("RVC_VK_ENABLE_F16")) {
-        _putenv_s("GGML_VK_DISABLE_F16", "1");
+        utils::set_env("GGML_VK_DISABLE_F16", "1");
     }
 
     string input_wav;

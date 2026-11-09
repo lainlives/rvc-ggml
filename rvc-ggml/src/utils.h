@@ -16,6 +16,7 @@
 #include <vector>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -105,4 +106,13 @@ namespace utils {
     std::vector<std::string> list_files(const std::string& directory, const std::string& extension);
     std::string filename(const std::string& filepath);
     bool ensure_directory(const std::string& dir);
+
+    // Set an environment variable, overwriting any previous value (portable wrapper: _putenv_s / setenv).
+    inline void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+        _putenv_s(name, value);
+#else
+        setenv(name, value, 1);
+#endif
+    }
 }

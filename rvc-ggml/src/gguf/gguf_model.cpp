@@ -6,6 +6,7 @@
 
 #include <ggml-alloc.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -191,8 +192,12 @@ void GgufModel::load_weights(gguf_context* ctx_gguf, const std::string& path, gg
         throw std::runtime_error("Failed to allocate weight buffer (out of VRAM?)");
     }
 
+#ifdef _WIN32
     std::filesystem::path p(path);
     FILE* file = _wfopen(p.wstring().c_str(), L"rb");
+#else
+    FILE* file = std::fopen(path.c_str(), "rb");
+#endif
     if (!file) {
         throw std::runtime_error("Failed to open file: " + path);
     }
@@ -209,7 +214,11 @@ void GgufModel::load_weights(gguf_context* ctx_gguf, const std::string& path, gg
             const size_t size = ggml_nbytes(t);
             if (read_buf.size() < size) read_buf.resize(size);
 
+#ifdef _WIN32
             if (_fseeki64(file, static_cast<long long>(offset), SEEK_SET) != 0) {
+#else
+            if (fseeko(file, static_cast<off_t>(offset), SEEK_SET) != 0) {
+#endif
                 fclose(file);
                 throw std::runtime_error("GGUF seek failed: " + std::string(t->name));
             }
