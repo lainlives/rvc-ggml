@@ -49,9 +49,11 @@ import torch
 
 try:
     from gguf import GGUFWriter
-    from gguf.quants import quantize, GGMLQuantizationType
+    from gguf.quants import GGMLQuantizationType, quantize
 except ImportError:
-    print("Missing gguf package, please install first: pip install gguf -i https://pypi.tuna.tsinghua.edu.cn/simple")
+    print(
+        "Missing gguf package, please install first: pip install gguf -i https://pypi.tuna.tsinghua.edu.cn/simple"
+    )
     raise
 
 
@@ -85,7 +87,9 @@ FILE_TYPE_ID = {
 def parse_dtype(name: str) -> GGMLQuantizationType:
     key = name.lower()
     if key not in DTYPE_MAP:
-        raise ValueError(f"Unsupported quantization type: {name} (available: {', '.join(sorted(DTYPE_MAP))})")
+        raise ValueError(
+            f"Unsupported quantization type: {name} (available: {', '.join(sorted(DTYPE_MAP))})"
+        )
     return DTYPE_MAP[key]
 
 
@@ -146,9 +150,14 @@ def fold_weight_norm(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
 #   so during verification rely on the numpy shape of t.data (identical to the PyTorch shape).
 
 
-def write_tensor_mixed(writer: GGUFWriter, name: str, data: np.ndarray,
-                       qtype: GGMLQuantizationType, policy: str,
-                       stats: dict) -> None:
+def write_tensor_mixed(
+    writer: GGUFWriter,
+    name: str,
+    data: np.ndarray,
+    qtype: GGMLQuantizationType,
+    policy: str,
+    stats: dict,
+) -> None:
     """Write a single tensor.
 
     policy:
@@ -172,7 +181,9 @@ def write_tensor_mixed(writer: GGUFWriter, name: str, data: np.ndarray,
             stats["quantized"] += 1
             return
         except Exception as e:  # noqa: BLE001
-            stats["warnings"].append(f"{name}: quantization failed ({e}), falling back to F16")
+            stats["warnings"].append(
+                f"{name}: quantization failed ({e}), falling back to F16"
+            )
     writer.add_tensor(name, data.astype(np.float16))
     stats["f16"] += 1
 
@@ -205,8 +216,10 @@ def finish_writer(writer: GGUFWriter, path: str) -> float:
 def print_stats(label: str, stats: dict, size_mb: float) -> None:
     for w in stats["warnings"]:
         print(f"  [WARN] {w}")
-    print(f"  {label}: quantized {stats['quantized']} / F16 {stats['f16']} / F32 {stats['f32']}, "
-          f"file {size_mb:.1f} MB")
+    print(
+        f"  {label}: quantized {stats['quantized']} / F16 {stats['f16']} / F32 {stats['f32']}, "
+        f"file {size_mb:.1f} MB"
+    )
 
 
 # ============================================================================
@@ -218,8 +231,11 @@ HUBERT_F32_SUFFIXES = (".bias", ".gamma", ".beta")
 
 def hubert_should_flatten(name: str, data: np.ndarray) -> bool:
     # Only the frontend convolutions (which take the vits::conv1d flattened path); pos_conv is a grouped convolution and keeps its original layout
-    return (data.ndim == 3 and name.endswith(".weight")
-            and name.startswith("feature_extractor.conv_layers."))
+    return (
+        data.ndim == 3
+        and name.endswith(".weight")
+        and name.startswith("feature_extractor.conv_layers.")
+    )
 
 
 def hubert_policy(name: str, data: np.ndarray) -> str:
@@ -247,22 +263,40 @@ def remap_hf_hubert_keys(state: dict[str, torch.Tensor]) -> dict[str, torch.Tens
     for key, value in state.items():
         k = key
         # conv feature extractor: HF "conv"/"layer_norm" -> fairseq Sequential slots (0=conv, 2=group norm)
-        k = re.sub(r"^feature_extractor\.conv_layers\.(\d+)\.conv\.",
-                   r"feature_extractor.conv_layers.\1.0.", k)
-        k = re.sub(r"^feature_extractor\.conv_layers\.(\d+)\.layer_norm\.",
-                   r"feature_extractor.conv_layers.\1.2.", k)
+        k = re.sub(
+            r"^feature_extractor\.conv_layers\.(\d+)\.conv\.",
+            r"feature_extractor.conv_layers.\1.0.",
+            k,
+        )
+        k = re.sub(
+            r"^feature_extractor\.conv_layers\.(\d+)\.layer_norm\.",
+            r"feature_extractor.conv_layers.\1.2.",
+            k,
+        )
         # feature projection -> fairseq layer_norm (pre-projection) + post_extract_proj
         k = k.replace("feature_projection.layer_norm.", "layer_norm.")
         k = k.replace("feature_projection.projection.", "post_extract_proj.")
         # positional convolution
         k = k.replace("encoder.pos_conv_embed.conv.", "encoder.pos_conv.0.")
         # transformer layers
-        k = re.sub(r"^encoder\.layers\.(\d+)\.attention\.", r"encoder.layers.\1.self_attn.", k)
-        k = re.sub(r"^encoder\.layers\.(\d+)\.layer_norm\.", r"encoder.layers.\1.self_attn_layer_norm.", k)
-        k = re.sub(r"^encoder\.layers\.(\d+)\.feed_forward\.intermediate_dense\.",
-                   r"encoder.layers.\1.fc1.", k)
-        k = re.sub(r"^encoder\.layers\.(\d+)\.feed_forward\.output_dense\.",
-                   r"encoder.layers.\1.fc2.", k)
+        k = re.sub(
+            r"^encoder\.layers\.(\d+)\.attention\.", r"encoder.layers.\1.self_attn.", k
+        )
+        k = re.sub(
+            r"^encoder\.layers\.(\d+)\.layer_norm\.",
+            r"encoder.layers.\1.self_attn_layer_norm.",
+            k,
+        )
+        k = re.sub(
+            r"^encoder\.layers\.(\d+)\.feed_forward\.intermediate_dense\.",
+            r"encoder.layers.\1.fc1.",
+            k,
+        )
+        k = re.sub(
+            r"^encoder\.layers\.(\d+)\.feed_forward\.output_dense\.",
+            r"encoder.layers.\1.fc2.",
+            k,
+        )
         out[k] = value
     return out
 
@@ -293,8 +327,12 @@ def export_hubert(input_path: str, out_path: str, dtype: str) -> None:
 
     layers = int(model_cfg.get("encoder_layers", hf_cfg.get("num_hidden_layers", 12)))
     hidden = int(model_cfg.get("encoder_embed_dim", hf_cfg.get("hidden_size", 768)))
-    ffn = int(model_cfg.get("encoder_ffn_embed_dim", hf_cfg.get("intermediate_size", 3072)))
-    heads = int(model_cfg.get("encoder_attention_heads", hf_cfg.get("num_attention_heads", 12)))
+    ffn = int(
+        model_cfg.get("encoder_ffn_embed_dim", hf_cfg.get("intermediate_size", 3072))
+    )
+    heads = int(
+        model_cfg.get("encoder_attention_heads", hf_cfg.get("num_attention_heads", 12))
+    )
     conv_pos = int(model_cfg.get("conv_pos", 128))
     conv_pos_groups = int(model_cfg.get("conv_pos_groups", 16))
     final_dim = int(model_cfg.get("final_dim", 256))
@@ -311,8 +349,10 @@ def export_hubert(input_path: str, out_path: str, dtype: str) -> None:
         elif k.endswith("final_proj.weight"):
             final_dim = int(v.shape[0])
 
-    print(f"  config: layers={layers} hidden={hidden} ffn={ffn} heads={heads} "
-          f"conv_pos={conv_pos}/{conv_pos_groups} final_dim={final_dim}")
+    print(
+        f"  config: layers={layers} hidden={hidden} ffn={ffn} heads={heads} "
+        f"conv_pos={conv_pos}/{conv_pos_groups} final_dim={final_dim}"
+    )
 
     state = fold_weight_norm(state)
 
@@ -360,8 +400,14 @@ def export_hubert(input_path: str, out_path: str, dtype: str) -> None:
 # ============================================================================
 
 RMVPE_F32_MARKERS = (
-    "running_mean", "running_var", "num_batches_tracked",
-    "bn.", "shortcut", "gru.", "fc.", "conv1.0",
+    "running_mean",
+    "running_var",
+    "num_batches_tracked",
+    "bn.",
+    "shortcut",
+    "gru.",
+    "fc.",
+    "conv1.0",
 )
 
 
@@ -383,14 +429,15 @@ def rmvpe_policy(name: str, data: np.ndarray) -> str:
         if marker in name:
             return "f32"
     if data.ndim == 2:
-        return "f32"   # GRU / head, etc.; stays F32
+        return "f32"  # GRU / head, etc.; stays F32
     if name.endswith(".weight"):
         return "quant"
     return "f32"
 
 
-def make_rmvpe_mel_basis(sample_rate=16000, n_fft=1024, n_mels=128,
-                         fmin=30.0, fmax=8000.0) -> np.ndarray:
+def make_rmvpe_mel_basis(
+    sample_rate=16000, n_fft=1024, n_mels=128, fmin=30.0, fmax=8000.0
+) -> np.ndarray:
     """Mel filterbank.
 
     Prefer librosa.filters.mel(htk=True) (fully consistent with RVC upstream MelSpectrogram);
@@ -398,10 +445,18 @@ def make_rmvpe_mel_basis(sample_rate=16000, n_fft=1024, n_mels=128,
     """
     try:
         import librosa
+
         return np.asarray(
-            librosa.filters.mel(sr=sample_rate, n_fft=n_fft, n_mels=n_mels,
-                                fmin=fmin, fmax=fmax, htk=True),
-            dtype=np.float32)
+            librosa.filters.mel(
+                sr=sample_rate,
+                n_fft=n_fft,
+                n_mels=n_mels,
+                fmin=fmin,
+                fmax=fmax,
+                htk=True,
+            ),
+            dtype=np.float32,
+        )
     except ImportError:
         pass
 
@@ -493,24 +548,24 @@ def export_rmvpe(input_path: str, out_path: str, dtype: str) -> None:
 
 # Numerically sensitive tensors (always F32)
 RVC_FORCE_F32_EXACT = (
-    "emb_g.weight",          # speaker table
+    "emb_g.weight",  # speaker table
     "enc_p.emb_pitch.weight",  # pitch lookup table
     "enc_p.emb_phone.weight",  # feature projection (256/768 -> 192)
     "dec.m_source.l_linear.weight",
 )
-RVC_FORCE_F32_MARKERS = (
-    ".bias",
-)
+RVC_FORCE_F32_MARKERS = (".bias",)
 RVC_FORCE_F32_PREFIX = (
-    "flow.flows.",           # flow coupling layers (small and numerically sensitive)
-    "dec.ups.",              # Vulkan CONV_TRANSPOSE_1D only supports F32 weights
-    "dec.noise_convs.",      # excitation noise convolutions (small; amplified stage by stage through the generator)
+    "flow.flows.",  # flow coupling layers (small and numerically sensitive)
+    "dec.ups.",  # Vulkan CONV_TRANSPOSE_1D only supports F32 weights
+    "dec.noise_convs.",  # excitation noise convolutions (small; amplified stage by stage through the generator)
 )
 
 
 def rvc_should_flatten(name: str, data: np.ndarray) -> bool:
     # ConvTranspose1d (dec.ups) is not flattened (native Vulkan operators only support F32)
-    return data.ndim == 3 and name.endswith(".weight") and not name.startswith("dec.ups.")
+    return (
+        data.ndim == 3 and name.endswith(".weight") and not name.startswith("dec.ups.")
+    )
 
 
 def rvc_policy(name: str, data: np.ndarray) -> str:
@@ -554,15 +609,30 @@ def export_rvc_model(input_path: str, out_path: str, dtype: str) -> None:
         sr = {"32k": 32000, "40k": 40000, "48k": 48000}[sr]
 
     (
-        spec_channels, segment_size, inter_channels, hidden_channels,
-        filter_channels, n_heads, n_layers, kernel_size, p_dropout,
-        resblock, resblock_kernel_sizes, resblock_dilation_sizes,
-        upsample_rates, upsample_initial_channel, upsample_kernel_sizes,
-        spk_embed_dim, gin_channels, sample_rate,
+        spec_channels,
+        segment_size,
+        inter_channels,
+        hidden_channels,
+        filter_channels,
+        n_heads,
+        n_layers,
+        kernel_size,
+        p_dropout,
+        resblock,
+        resblock_kernel_sizes,
+        resblock_dilation_sizes,
+        upsample_rates,
+        upsample_initial_channel,
+        upsample_kernel_sizes,
+        spk_embed_dim,
+        gin_channels,
+        sample_rate,
     ) = config[:18]
 
-    print(f"  version={version} f0={if_f0} sr={sample_rate} spk={n_spk} "
-          f"upsample={upsample_rates} kernels={upsample_kernel_sizes}")
+    print(
+        f"  version={version} f0={if_f0} sr={sample_rate} spk={n_spk} "
+        f"upsample={upsample_rates} kernels={upsample_kernel_sizes}"
+    )
 
     state = fold_weight_norm(weight)
 
@@ -588,14 +658,18 @@ def export_rvc_model(input_path: str, out_path: str, dtype: str) -> None:
     writer.add_uint32(kp + "n_layers", int(n_layers))
     writer.add_uint32(kp + "kernel_size", int(kernel_size))
     writer.add_string(kp + "resblock", str(resblock))
-    writer.add_array(kp + "resblock_kernel_sizes", [int(x) for x in resblock_kernel_sizes])
+    writer.add_array(
+        kp + "resblock_kernel_sizes", [int(x) for x in resblock_kernel_sizes]
+    )
     dilation_flat = []
     for d in resblock_dilation_sizes:
         dilation_flat.extend(int(x) for x in d)
     writer.add_array(kp + "resblock_dilation_sizes", dilation_flat)
     writer.add_array(kp + "upsample_rates", [int(x) for x in upsample_rates])
     writer.add_uint32(kp + "upsample_initial_channel", int(upsample_initial_channel))
-    writer.add_array(kp + "upsample_kernel_sizes", [int(x) for x in upsample_kernel_sizes])
+    writer.add_array(
+        kp + "upsample_kernel_sizes", [int(x) for x in upsample_kernel_sizes]
+    )
     writer.add_uint32(kp + "spk_embed_dim", int(spk_embed_dim))
     writer.add_uint32(kp + "gin_channels", int(gin_channels))
     writer.add_bool("rvc.conv_flat", True)
@@ -635,25 +709,34 @@ def export_rvc_model(input_path: str, out_path: str, dtype: str) -> None:
 # 4. FAISS IVF retrieval index
 # ============================================================================
 
+
 def export_index(input_path: str, out_path: str) -> None:
     print(f"[index] loading {input_path}")
     import faiss
 
     index = faiss.read_index(input_path)
     if index.__class__.__name__ != "IndexIVFFlat":
-        raise RuntimeError(f"Only IndexIVFFlat is supported (currently {index.__class__.__name__})")
+        raise RuntimeError(
+            f"Only IndexIVFFlat is supported (currently {index.__class__.__name__})"
+        )
 
     dim = int(index.d)
     nlist = int(index.nlist)
     ntotal = int(index.ntotal)
     nprobe = int(getattr(index, "nprobe", 1))
-    print(f"  dim={dim} nlist={nlist} ntotal={ntotal} metric={index.metric_type} nprobe={nprobe}")
+    print(
+        f"  dim={dim} nlist={nlist} ntotal={ntotal} metric={index.metric_type} nprobe={nprobe}"
+    )
 
     quantizer = faiss.downcast_index(index.quantizer)
     if not quantizer.__class__.__name__.startswith("IndexFlat"):
-        raise RuntimeError(f"Only Flat quantizers are supported (currently {quantizer.__class__.__name__})")
+        raise RuntimeError(
+            f"Only Flat quantizers are supported (currently {quantizer.__class__.__name__})"
+        )
 
-    centroids = np.ascontiguousarray(quantizer.reconstruct_n(0, nlist), dtype=np.float32)
+    centroids = np.ascontiguousarray(
+        quantizer.reconstruct_n(0, nlist), dtype=np.float32
+    )
 
     vectors_list = []
     offsets = np.zeros(nlist, dtype=np.float32)
@@ -664,11 +747,18 @@ def export_index(input_path: str, out_path: str) -> None:
         offsets[list_id] = cursor
         lengths[list_id] = size
         if size:
-            codes = faiss.rev_swig_ptr(index.invlists.get_codes(list_id), size * index.code_size)
-            vectors_list.append(np.frombuffer(codes, dtype=np.float32).reshape(size, dim).copy())
+            codes = faiss.rev_swig_ptr(
+                index.invlists.get_codes(list_id), size * index.code_size
+            )
+            vectors_list.append(
+                np.frombuffer(codes, dtype=np.float32).reshape(size, dim).copy()
+            )
         cursor += size
-    vectors = (np.concatenate(vectors_list, axis=0) if vectors_list
-               else np.zeros((0, dim), dtype=np.float32))
+    vectors = (
+        np.concatenate(vectors_list, axis=0)
+        if vectors_list
+        else np.zeros((0, dim), dtype=np.float32)
+    )
 
     writer = GGUFWriter(out_path, "rvc_index")
     writer.add_name(f"RVC-GGML retrieval index ({Path(input_path).stem})")
@@ -691,6 +781,7 @@ def export_index(input_path: str, out_path: str) -> None:
 # Batch conversion
 # ============================================================================
 
+
 def find_asset(root: Path, *candidates: str) -> Path:
     for rel in candidates:
         p = root / rel
@@ -704,9 +795,11 @@ def export_all(rvc_root: str, out_dir: str, dtype: str) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    hubert = find_asset(root,
-                        "assets/hubert/hubert_base.pt",
-                        "assets/hubert/hubert_base.pt".replace("/", "\\"))
+    hubert = find_asset(
+        root,
+        "assets/hubert/hubert_base.pt",
+        "assets/hubert/hubert_base.pt".replace("/", "\\"),
+    )
     export_hubert(str(hubert), str(out / "hubert.gguf"), "fp16")
 
     rmvpe = find_asset(root, "assets/rmvpe/rmvpe.pt")
@@ -726,6 +819,7 @@ def export_all(rvc_root: str, out_dir: str, dtype: str) -> None:
 # ============================================================================
 # CLI
 # ============================================================================
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="RVC-GGML model conversion tool")
