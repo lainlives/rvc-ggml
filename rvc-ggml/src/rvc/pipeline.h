@@ -29,6 +29,8 @@ namespace rvc {
 
     struct ConvertOptions {
         int f0_up_key = 0;              // semitones
+        bool proposed_pitch = false;    // auto pitch: shift the median f0 to the threshold
+        float proposed_pitch_threshold = 155.0f;  // target f0 in Hz (155 male / 255 female), clamped +/-12
         int sid = 0;
         float index_rate = 0.0f;
         float protect = 0.33f;

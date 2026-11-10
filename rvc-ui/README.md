@@ -66,6 +66,15 @@ The UI locates its dependencies at runtime:
   Output: WAV natively; FLAC / MP3 / OGG are encoded with ffmpeg.
 - Mix output is peak-normalised to -1 dBFS when it would clip or when the peak
   is below -5 dBFS; otherwise it is left untouched.
+- "Auto pitch (proposed)": detects the median voiced f0 of the vocals and adds
+  the shift that moves it to the target (155 Hz male / 255 Hz female, clamped
+  to ±12 semitones) via RVC-GGML's `--proposed-pitch`; the instrumental is
+  shifted by the same total so the mix stays in tune.
+- The full log lives in a separate window ("Log" button, bottom left); the main
+  view shows a step progress bar and a status line instead.
+- Generated outputs can be played in-app (play/pause/stop/seek, miniaudio); the
+  position slider is a placeholder for a future waveform widget (that widget
+  should draw precomputed peaks, not scan the audio per frame).
 - The background split converts both stems with RVC and mixes them with the
   separately adjustable "background" gain (stem 0 is treated as the main vocals,
   stem 1 as the background).

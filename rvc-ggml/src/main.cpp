@@ -101,6 +101,7 @@ namespace {
         cout << "  --output <wav>       output file (default output/converted.wav)" << endl;
         cout << "  --model <gguf>       character model (default models/guanguanV1.gguf)" << endl;
         cout << "  --pitch <n>          pitch shift in semitones (default 0)" << endl;
+        cout << "  --proposed-pitch <hz>  auto pitch: shift median f0 to <hz> (155 male / 255 female), clamp +/-12" << endl;
         cout << "  --sid <n>            speaker ID (default 0)" << endl;
         cout << "  --index <gguf>       retrieval index (unused by default)" << endl;
         cout << "  --index-rate <r>     retrieval mix rate 0~1 (default 0)" << endl;
@@ -984,6 +985,10 @@ int main(int argc, char* argv[]) {
         }
         else if (a == "--pitch" && i + 1 < argc) {
             convert_opt.f0_up_key = stoi(argv[++i]);
+        }
+        else if (a == "--proposed-pitch" && i + 1 < argc) {
+            convert_opt.proposed_pitch = true;
+            convert_opt.proposed_pitch_threshold = stof(argv[++i]);
         }
         else if (a == "--sid" && i + 1 < argc) {
             convert_opt.sid = stoi(argv[++i]);

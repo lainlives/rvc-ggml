@@ -9,12 +9,14 @@
 
 #include "song_cover_page.h"
 
+#include "audio_player.h"
 #include "audio_utils.h"
 #include "paths.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDialog>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -29,8 +31,12 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QProgressBar>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollBar>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QToolButton>
@@ -42,11 +48,23 @@ QString display_name(const QString& path) {
     return QFileInfo(path).fileName();
 }
 
+QString format_time_seconds(double seconds) {
+    const int total = static_cast<int>(seconds + 0.5);
+    return QStringLiteral("%1:%2").arg(total / 60).arg(total % 60, 2, 10, QLatin1Char('0'));
+}
+
 } // namespace
 
 SongCoverPage::SongCoverPage(QWidget* parent) : QWidget(parent) {
     build_ui();
     populate_models();
+
+    player_ = new AudioPlayer(this);
+    connect(player_, &AudioPlayer::position_changed, this, &SongCoverPage::on_player_position);
+    connect(player_, &AudioPlayer::state_changed, this, &SongCoverPage::on_player_state);
+    if (!player_->available()) {
+        log(QStringLiteral("Audio playback is unavailable (no audio device); covers can still be generated."));
+    }
 }
 
 SongCoverPage::~SongCoverPage() {
@@ -191,6 +209,25 @@ void SongCoverPage::build_ui() {
         auto* row = new QWidget(options_group);
         auto* h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
+        proposed_pitch_check_ = new QCheckBox(QStringLiteral("Auto pitch (proposed)"), row);
+        pitch_threshold_spin_ = new QDoubleSpinBox(row);
+        pitch_threshold_spin_->setRange(50.0, 500.0);
+        pitch_threshold_spin_->setValue(155.0);
+        pitch_threshold_spin_->setSuffix(QStringLiteral(" Hz"));
+        pitch_threshold_spin_->setEnabled(false);
+        pitch_threshold_spin_->setToolTip(QStringLiteral(
+            "Target median f0: 155 Hz (male) / 255 Hz (female); shift clamped to +/-12 semitones"));
+        connect(proposed_pitch_check_, &QCheckBox::toggled,
+                pitch_threshold_spin_, &QDoubleSpinBox::setEnabled);
+        h->addWidget(proposed_pitch_check_);
+        h->addWidget(pitch_threshold_spin_);
+        h->addStretch(1);
+        options_form->addRow(QStringLiteral("Pitch"), row);
+    }
+    {
+        auto* row = new QWidget(options_group);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
         rms_mix_spin_ = new QDoubleSpinBox(row);
         rms_mix_spin_->setRange(0.0, 1.0);
         rms_mix_spin_->setSingleStep(0.05);
@@ -224,24 +261,67 @@ void SongCoverPage::build_ui() {
     auto* run_layout = new QVBoxLayout(run_group);
 
     steps_list_ = new QListWidget(run_group);
-    steps_list_->setMinimumHeight(120);
+    steps_list_->setMinimumHeight(110);
     run_layout->addWidget(steps_list_);
 
-    log_view_ = new QPlainTextEdit(run_group);
+    // Playback row (a seekable progress slider for now; a waveform widget can
+    // replace/overlay it later).
+    {
+        auto* row = new QWidget(run_group);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        play_button_ = new QPushButton(QStringLiteral("Play"), row);
+        stop_button_ = new QPushButton(QStringLiteral("Stop"), row);
+        position_slider_ = new QSlider(Qt::Horizontal, row);
+        position_slider_->setRange(0, 1000);
+        time_label_ = new QLabel(QStringLiteral("--:-- / --:--"), row);
+        play_button_->setEnabled(false);
+        stop_button_->setEnabled(false);
+        position_slider_->setEnabled(false);
+        connect(play_button_, &QPushButton::clicked, this, &SongCoverPage::toggle_playback);
+        connect(stop_button_, &QPushButton::clicked, this, &SongCoverPage::stop_playback);
+        connect(position_slider_, &QSlider::sliderPressed, this, [this] { slider_dragging_ = true; });
+        connect(position_slider_, &QSlider::sliderMoved, this, &SongCoverPage::on_slider_moved);
+        connect(position_slider_, &QSlider::sliderReleased, this, &SongCoverPage::on_slider_released);
+        h->addWidget(play_button_);
+        h->addWidget(stop_button_);
+        h->addWidget(position_slider_, 1);
+        h->addWidget(time_label_);
+        run_layout->addWidget(row);
+    }
+
+    // Progress + status row (replaces the inline log; the Log button pops the
+    // full log out into a separate window).
+    {
+        auto* row = new QWidget(run_group);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        progress_bar_ = new QProgressBar(row);
+        progress_bar_->setRange(0, 100);
+        progress_bar_->setValue(0);
+        status_label_ = new QLabel(QStringLiteral("Idle"), row);
+        h->addWidget(progress_bar_, 1);
+        h->addWidget(status_label_);
+        run_layout->addWidget(row);
+    }
+
+    // The log view is kept for the pop-out window (created on first use).
+    log_view_ = new QPlainTextEdit();
     log_view_->setReadOnly(true);
-    log_view_->setMinimumHeight(180);
-    run_layout->addWidget(log_view_, 1);
 
     {
         auto* row = new QWidget(run_group);
         auto* h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
+        log_button_ = new QPushButton(QStringLiteral("Log"), row);
+        connect(log_button_, &QPushButton::clicked, this, &SongCoverPage::show_log);
         run_button_ = new QPushButton(QStringLiteral("Generate song cover"), row);
         run_button_->setDefault(true);
         cancel_button_ = new QPushButton(QStringLiteral("Cancel"), row);
         cancel_button_->setEnabled(false);
         connect(run_button_, &QPushButton::clicked, this, &SongCoverPage::start_run);
         connect(cancel_button_, &QPushButton::clicked, this, &SongCoverPage::cancel_run);
+        h->addWidget(log_button_);
         h->addStretch(1);
         h->addWidget(run_button_);
         h->addWidget(cancel_button_);
@@ -370,6 +450,10 @@ QStringList SongCoverPage::rvc_args(const QString& in, const QString& out) const
       << QStringLiteral("--hubert") << extractor_combo_->currentData().toString()
       << QStringLiteral("--rmvpe") << f0_combo_->currentData().toString()
       << QStringLiteral("--device") << device_combo_->currentData().toString();
+    if (proposed_pitch_check_->isChecked()) {
+        a << QStringLiteral("--proposed-pitch")
+          << QString::number(pitch_threshold_spin_->value(), 'f', 1);
+    }
     return a;
 }
 
@@ -422,9 +506,9 @@ void SongCoverPage::start_run() {
         plan_ << StepKind::ConvertBackup;
         steps_list_->addItem(QStringLiteral("\u00b7 Convert background vocals (RVC)"));
     }
-    if (total_pitch() != 0) {
+    if (total_pitch() != 0 || proposed_pitch_check_->isChecked()) {
         plan_ << StepKind::ShiftInstrumental;
-        steps_list_->addItem(QStringLiteral("\u00b7 Pitch-shift instrumental (%1 semitones)").arg(total_pitch()));
+        steps_list_->addItem(QStringLiteral("\u00b7 Pitch-shift instrumental"));
     }
     plan_ << StepKind::Mix;
     steps_list_->addItem(QStringLiteral("\u00b7 Mix and write output"));
@@ -432,7 +516,12 @@ void SongCoverPage::start_run() {
     running_ = true;
     cancel_requested_ = false;
     step_index_ = -1;
+    proposed_offset_ = 0;
+    instrumental_shift_applied_ = false;
     run_timer_.start();
+    progress_bar_->setValue(0);
+    set_status(QStringLiteral("Starting..."));
+    stop_playback();
     run_button_->setEnabled(false);
     cancel_button_->setEnabled(true);
 
@@ -447,6 +536,9 @@ void SongCoverPage::run_step(int index) {
     step_index_ = index;
     const StepKind kind = plan_.at(index);
     set_step_state(index, QChar(0x25b8));  // running marker
+    const QString label = steps_list_->item(index)->text().mid(2);
+    set_status(QStringLiteral("Step %1/%2: %3").arg(index + 1).arg(plan_.size()).arg(label));
+    progress_bar_->setValue(index * 100 / plan_.size());
 
     switch (kind) {
         case StepKind::Separate:
@@ -465,12 +557,23 @@ void SongCoverPage::run_step(int index) {
                                               conv_backup_wav_));
             break;
         case StepKind::ShiftInstrumental: {
-            const int cents = total_pitch() * 100;
+            const int total = total_pitch() + proposed_offset_;
+            const int cents = total * 100;
+            if (proposed_offset_ != 0) {
+                log(QStringLiteral("Auto pitch: proposed shift %1 semitone(s); total instrumental shift %2.")
+                        .arg(proposed_offset_).arg(total));
+            }
+            if (cents == 0) {
+                log(QStringLiteral("Instrumental pitch shift: 0 semitones, nothing to do."));
+                complete_step();
+                return;
+            }
+            instrumental_shift_applied_ = true;
             if (!tool_sox_.isEmpty()) {
                 start_process(tool_sox_, {instrumental_wav_, shifted_instrumental_wav_,
                                           QStringLiteral("pitch"), QString::number(cents)});
             } else if (!tool_ffmpeg_.isEmpty()) {
-                const double ratio = std::pow(2.0, total_pitch() / 12.0);
+                const double ratio = std::pow(2.0, total / 12.0);
                 const QString filter = QStringLiteral("asetrate=%1*%2,aresample=%1,atempo=%3")
                                            .arg(44100)
                                            .arg(ratio)
@@ -496,7 +599,19 @@ void SongCoverPage::start_process(const QString& program, const QStringList& arg
     process_->setArguments(args);
     process_->setProcessChannelMode(QProcess::MergedChannels);
     connect(process_, &QProcess::readyReadStandardOutput, this, [this] {
-        log(QString::fromLocal8Bit(process_->readAllStandardOutput()));
+        const QString chunk = QString::fromLocal8Bit(process_->readAllStandardOutput());
+        log(chunk);
+        // Capture the auto-pitch offset reported by the main conversion so the
+        // instrumental can be shifted by the same amount.
+        if (step_index_ >= 0 && step_index_ < plan_.size() &&
+            plan_.at(step_index_) == StepKind::ConvertMain &&
+            chunk.contains(QStringLiteral("proposed pitch"))) {
+            static const QRegularExpression re(QStringLiteral("offset=([+-]?\\d+)"));
+            const QRegularExpressionMatch match = re.match(chunk);
+            if (match.hasMatch()) {
+                proposed_offset_ = match.captured(1).toInt();
+            }
+        }
     });
     connect(process_, &QProcess::finished, this, &SongCoverPage::on_process_finished);
     log(QStringLiteral(">> %1 %2").arg(program, args.join(QLatin1Char(' '))));
@@ -525,8 +640,13 @@ void SongCoverPage::on_process_finished(int exit_code, int exit_status) {
         return;
     }
 
+    complete_step();
+}
+
+void SongCoverPage::complete_step() {
     const StepKind kind = plan_.at(step_index_);
     set_step_state(step_index_, QChar(0x2713));
+    progress_bar_->setValue((step_index_ + 1) * 100 / plan_.size());
 
     if (kind == StepKind::Separate && !prepare_instrumental()) {
         return;
@@ -576,9 +696,8 @@ void SongCoverPage::run_mix() {
     try {
         QApplication::setOverrideCursor(Qt::WaitCursor);
 
-        const bool shifted_this_run =
-            plan_.contains(StepKind::ShiftInstrumental) && QFile::exists(shifted_instrumental_wav_);
-        const QString instrumental_file = shifted_this_run
+        const QString instrumental_file =
+            (instrumental_shift_applied_ && QFile::exists(shifted_instrumental_wav_))
             ? shifted_instrumental_wav_ : instrumental_wav_;
         audio::Buffer instrumental = audio::resample(audio::to_stereo(audio::load_audio(instrumental_file.toStdString())), 44100);
         audio::Buffer main = audio::resample(audio::to_stereo(audio::load_audio(conv_main_wav_.toStdString())), 44100);
@@ -624,6 +743,7 @@ void SongCoverPage::run_mix() {
                 .arg(target)
                 .arg(static_cast<double>(mixed.frames()) / mixed.sample_rate, 0, 'f', 2)
                 .arg(mixed.sample_rate));
+        load_output_for_playback(target);
         finish_run(true);
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
@@ -675,6 +795,7 @@ bool SongCoverPage::encode_to(const QString& wav_path, const QString& target_pat
 
 void SongCoverPage::fail(const QString& message) {
     log(QStringLiteral("[error] %1").arg(message));
+    set_status(QStringLiteral("Failed: %1").arg(message));
     finish_run(false);
 }
 
@@ -687,6 +808,8 @@ void SongCoverPage::finish_run(bool success) {
         log(QStringLiteral("Song cover generated successfully."));
         log(QStringLiteral("Total time: %1 s (start -> file written)")
                 .arg(run_timer_.elapsed() / 1000.0, 0, 'f', 1));
+        progress_bar_->setValue(100);
+        set_status(QStringLiteral("Done: %1").arg(QFileInfo(output_edit_->text()).fileName()));
     }
 }
 
@@ -697,5 +820,79 @@ void SongCoverPage::cancel_run() {
     cancel_requested_ = true;
     if (process_ != nullptr) {
         process_->kill();
+    }
+}
+
+void SongCoverPage::set_status(const QString& text) {
+    status_label_->setText(text);
+}
+
+void SongCoverPage::show_log() {
+    if (log_dialog_ == nullptr) {
+        log_dialog_ = new QDialog(this);
+        log_dialog_->setWindowTitle(QStringLiteral("Log"));
+        log_dialog_->resize(780, 460);
+        auto* layout = new QVBoxLayout(log_dialog_);
+        layout->setContentsMargins(6, 6, 6, 6);
+        layout->addWidget(log_view_);  // reparents the retained log view
+    }
+    log_dialog_->show();
+    log_dialog_->raise();
+    log_dialog_->activateWindow();
+}
+
+void SongCoverPage::toggle_playback() {
+    if (player_ != nullptr) {
+        player_->toggle_play();
+    }
+}
+
+void SongCoverPage::stop_playback() {
+    if (player_ != nullptr) {
+        player_->stop();
+    }
+}
+
+void SongCoverPage::on_slider_moved(int value) {
+    const double duration = player_ != nullptr ? player_->duration_seconds() : 0.0;
+    const double position = duration * value / position_slider_->maximum();
+    time_label_->setText(QStringLiteral("%1 / %2").arg(
+        format_time_seconds(position), format_time_seconds(duration)));
+}
+
+void SongCoverPage::on_slider_released() {
+    slider_dragging_ = false;
+    if (player_ != nullptr && player_->loaded() && player_->duration_seconds() > 0.0) {
+        player_->seek_seconds(player_->duration_seconds() * position_slider_->value() /
+                              position_slider_->maximum());
+    }
+}
+
+void SongCoverPage::on_player_position(double position, double duration) {
+    if (!slider_dragging_) {
+        const double fraction = duration > 0.0 ? position / duration : 0.0;
+        const QSignalBlocker blocker(position_slider_);
+        position_slider_->setValue(static_cast<int>(fraction * position_slider_->maximum()));
+    }
+    time_label_->setText(QStringLiteral("%1 / %2").arg(
+        format_time_seconds(position), format_time_seconds(duration)));
+}
+
+void SongCoverPage::on_player_state() {
+    const bool playing = player_ != nullptr && player_->playing();
+    play_button_->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
+    stop_button_->setEnabled(player_ != nullptr && player_->loaded());
+}
+
+void SongCoverPage::load_output_for_playback(const QString& path) {
+    const bool ok = player_ != nullptr && player_->load(path);
+    play_button_->setEnabled(ok);
+    stop_button_->setEnabled(ok);
+    position_slider_->setEnabled(ok);
+    if (ok) {
+        on_player_position(0.0, player_->duration_seconds());
+        play_button_->setText(QStringLiteral("Play"));
+    } else if (player_ != nullptr && player_->available()) {
+        log(QStringLiteral("Playback: could not open %1").arg(path));
     }
 }

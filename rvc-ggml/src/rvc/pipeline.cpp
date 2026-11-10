@@ -288,7 +288,44 @@ struct RvcPipeline::Impl {
         if (has_f0) {
             rmvpe::Result r = rmvpe.infer(audio_pad, kRmvpeThreshold);
             std::vector<float> f0 = std::move(r.f0);
-            const float semitone = std::pow(2.0f, opt.f0_up_key / 12.0f);
+
+            // Proposed pitch (port of the ultimate-rvc / BS-RVC feature): shift the
+            // pitch contour so that its median voiced f0 lands on the target
+            // threshold (e.g. 155 Hz male / 255 Hz female), clamped to +/-12
+            // semitones, then add the manual shift on top.
+            int proposed_offset = 0;
+            if (opt.proposed_pitch && opt.proposed_pitch_threshold > 0.0f) {
+                std::vector<float> voiced;
+                voiced.reserve(f0.size());
+                for (float v : f0) {
+                    if (v > 0.0f) {
+                        voiced.push_back(v);
+                    }
+                }
+                float median = 0.0f;
+                if (voiced.size() >= 2) {
+                    const auto mid_it = voiced.begin() + static_cast<int>(voiced.size() / 2);
+                    std::nth_element(voiced.begin(), mid_it, voiced.end());
+                    median = *mid_it;
+                    if (voiced.size() % 2 == 0) {
+                        const float lo = *std::max_element(voiced.begin(), mid_it);
+                        median = 0.5f * (lo + median);
+                    }
+                }
+                if (median > 0.0f) {
+                    const double semis = 12.0 * std::log2(
+                        static_cast<double>(opt.proposed_pitch_threshold) / median);
+                    proposed_offset = static_cast<int>(std::lround(semis));
+                    proposed_offset = std::max(-12, std::min(12, proposed_offset));
+                }
+                char buf[160];
+                std::snprintf(buf, sizeof(buf),
+                    "proposed pitch: median f0=%.1f Hz, offset=%+d, total=%+d semitones",
+                    median, proposed_offset, opt.f0_up_key + proposed_offset);
+                Logger::info(buf);
+            }
+
+            const float semitone = std::pow(2.0f, (opt.f0_up_key + proposed_offset) / 12.0f);
             for (auto& v : f0) {
                 v *= semitone;
             }

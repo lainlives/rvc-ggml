@@ -129,6 +129,10 @@ RVC-GGML.exe            # no args -> interactive wizard
   levels: `fp16/q8_0/q5_1/q4_1/q4_0`.
 - `--hubert <gguf>` / `--rmvpe <gguf>` override the feature / f0 extractor paths
   (defaults `<model-dir>/hubert.gguf` / `<model-dir>/rmvpe.gguf`).
+- `--proposed-pitch <hz>` auto-shifts the vocals so the median voiced f0 targets
+  `<hz>` (155 male / 255 female, clamped ±12 semitones) and logs
+  `proposed pitch: median f0=..., offset=..., total=...`; the UI parses that line
+  to shift the instrumental by the same total.
 - Pipeline: WAV → 16 kHz mono → 48 Hz high-pass → silent split points → HuBERT features →
   RMVPE f0 → FAISS retrieval mix (`--index-rate`) → VITS synthesis → optional resample.
 - Model-level parameters (pitch shift, retrieval rate, protect, ...) are embedded in the
@@ -151,6 +155,10 @@ optional background-singer split, RVC conversion, pitch shift, mix). See `rvc-ui
 Requires Qt6 Widgets; `sox` (or ffmpeg) only when pitch != 0.
 Input: WAV/FLAC/MP3/OGG (miniaudio); output: WAV natively, FLAC/MP3/OGG via ffmpeg.
 The mix is peak-normalised to -1 dBFS when clipping or below -5 dBFS.
+The log lives in a pop-out window ("Log" button); the main view shows step progress/status.
+In-app playback uses miniaudio (`rvc-ui/src/audio_player.*`); the seek slider is a
+placeholder for a future waveform widget — keep waveform drawing cheap (precompute
+peaks once, never scan the full buffer per repaint).
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 

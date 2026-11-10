@@ -39,6 +39,7 @@ add_executable(rvc-ui
     src/main_window.cpp
     src/song_cover_page.cpp
     src/audio_utils.cpp
+    src/audio_player.cpp
     src/miniaudio_impl.cpp
 )
 target_include_directories(rvc-ui PRIVATE
