@@ -67,6 +67,17 @@ if(RVCTRAIN_GGML_DIR)
 endif()
 add_subdirectory("${RVCTRAIN_RVCGGML_DIR}" "${CMAKE_BINARY_DIR}/_deps/rvc-ggml")
 
+# ------------------------------------------------------------------ rvc-sep (Roformer separation, ggml)
+set(RVCTRAIN_RVCSEP_DIR "" CACHE PATH "rvc-sep-ggml source dir (default ../rvc-sep-ggml)")
+if(NOT RVCTRAIN_RVCSEP_DIR)
+    set(RVCTRAIN_RVCSEP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../rvc-sep-ggml")
+endif()
+if(EXISTS "${RVCTRAIN_RVCSEP_DIR}/CMakeLists.txt")
+    add_subdirectory("${RVCTRAIN_RVCSEP_DIR}" "${CMAKE_BINARY_DIR}/_deps/rvc-sep")
+else()
+    message(WARNING "rvc-sep-ggml not found at ${RVCTRAIN_RVCSEP_DIR}; skipping the separator CLI")
+endif()
+
 # ------------------------------------------------------------------ rvc-prep (preprocessing, ggml Vulkan)
 add_executable(rvc-prep
     src/main_prep.cpp

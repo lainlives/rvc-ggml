@@ -5,6 +5,7 @@ Pure C++ / [ggml](https://github.com/ggml-org/ggml) reimplementation of
 **training + inference, no CUDA required** (Vulkan acceleration for AMD/Intel/NVIDIA, CPU fallback).
 
 - `rvc-ggml/` — inference (`RVC-GGML.exe` + Python model-conversion scripts), backend = ggml.
+- `rvc-sep-ggml/` — Roformer vocal/source separation (`rvc-sep.exe`; adapted from BSRoformer.cpp).
 - `rvc-train-ggml/` — training (`rvc-prep.exe` preprocessing + `rvc-train.exe` training/export),
   backend = [train.cpp](https://github.com/Chui-Las/train.cpp) submodule (`third_party/train.cpp`).
 - Primary platform: **Windows 10/11 x64, MSVC + Ninja**. There is **no CI and no unit-test
@@ -25,11 +26,11 @@ Pure C++ / [ggml](https://github.com/ggml-org/ggml) reimplementation of
 6. Four files intentionally carry a UTF-8 BOM; preserve it when rewriting:
    `rvc-ggml/CMakeLists.txt`, `rvc-ggml/src/main.cpp`, `rvc-ggml/src/hubert/hubert.cpp`,
    `rvc-train-ggml/src/prep/feat.cpp`. All other text files are UTF-8, LF, no BOM.
-7. Two intentional Chinese remnants (do not "fix" blindly):
+7. Intentional non-English remnants (do not "fix" blindly):
    - The wizards accept `"是"` as a "yes" answer alias
      (`rvc-train-ggml/src/cli/{prep_wizard,train_wizard}.cpp`).
-   - `THIRD-PARTY-NOTICES.md` keeps the original RVC copyright holder name inside the
-     verbatim license text.
+   - `THIRD-PARTY-NOTICES.md` keeps original copyright holder names inside the verbatim
+     license texts (RVC, BSRoformer.cpp).
 8. Vendored third-party headers (`dr_wav.h`, `pocketfft_hdronly.h`) are not ours — do not restyle.
 
 ## Build (Windows)
@@ -42,11 +43,13 @@ powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1   
 powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1 -Action run # run self-tests
 ```
 
-- The build cascades: traincpp (submodule) → `rvc_core` + `RVC-GGML.exe` → `rvc-prep.exe` / `rvc-train.exe`.
+- The build cascades: traincpp (submodule) → `rvc_core` + `RVC-GGML.exe` → `rvc-prep.exe` / `rvc-train.exe` /
+  `rvc-sep.exe` (Roformer separation; reuses the same ggml target).
 - Outputs land in `rvc-train-ggml\build\bin\`; libraries in `rvc-train-ggml\build\lib\`.
 - Manual CMake: `cmake -S rvc-train-ggml -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build`.
-- Dependency path overrides: `RVCTRAIN_TRAINCPP_DIR`, `RVCTRAIN_RVCGGML_DIR`, `RVCTRAIN_GGML_DIR`;
-  inference side: `RVC_GGML_DIR` (local ggml source), `RVC_VULKAN`, `RVC_CUDA`.
+- Dependency path overrides: `RVCTRAIN_TRAINCPP_DIR`, `RVCTRAIN_RVCGGML_DIR`, `RVCTRAIN_RVCSEP_DIR`,
+  `RVCTRAIN_GGML_DIR`; inference side: `RVC_GGML_DIR` (local ggml source), `RVC_VULKAN`, `RVC_CUDA`;
+  separator side: `RVC_SEP_GGML_DIR`, `RVC_SEP_VULKAN`, `RVC_SEP_CUDA`.
 - ggml resolution order in `rvc-ggml/CMakeLists.txt`: `RVC_GGML_DIR` → installed package →
   sibling `../ggml-master` / `../ggml` → FetchContent of official **v0.23.0** with this repo's
   patch auto-applied.
@@ -105,8 +108,9 @@ Port notes:
 ### Inference — `RVC-GGML.exe`
 
 Model files (converted from the original RVC assets with `rvc-ggml/scripts/export_gguf.py`,
-which needs `torch` + `gguf`): `models/hubert.gguf`, `models/rmvpe.gguf`,
-`models/<character>.gguf`, `models/<character>.index.gguf`.
+which needs `torch` + `gguf`, plus `faiss-cpu` for index conversion):
+`models/hubert.gguf` (fairseq HuBERT or HF-format ContentVec/HuBERT — key names are remapped
+automatically), `models/rmvpe.gguf`, `models/<character>.gguf`, `models/<character>.index.gguf`.
 
 ```powershell
 RVC-GGML.exe --input in.wav --model models\<character>.gguf --index models\<character>.index.gguf `
@@ -122,6 +126,16 @@ RVC-GGML.exe            # no args -> interactive wizard
   RMVPE f0 → FAISS retrieval mix (`--index-rate`) → VITS synthesis → optional resample.
 - Model-level parameters (pitch shift, retrieval rate, protect, ...) are embedded in the
   character GGUF; CLI flags override them.
+
+### Separation — `rvc-sep.exe`
+
+```powershell
+rvc-sep.exe "models\roformers\<model>.gguf" input\song.wav output\vocals.wav   # --device cpu to force CPU
+```
+
+- Roformer (Mel-Band / BS) GGUF models live in `models/roformers/`; WAV in/out, any input
+  rate is auto-resampled to 44.1 kHz; multi-stem models write `<output>_stem_N.wav` (0 = vocals).
+- Built standalone (`rvc-sep-ggml/`) or as part of the training-side cascade.
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 
@@ -197,6 +211,7 @@ rvc-train.exe --interactive      # training wizard (also the no-args default)
 | Train step, trainer, losses, resume, selftests | `rvc-train-ggml/src/train/` |
 | Export (training GGUF, inference GGUF, index, kmeans, npy) | `rvc-train-ggml/src/export/` |
 | Wizards, JSON parsing | `rvc-train-ggml/src/cli/`, `src/common/` |
+| Roformer separation (rvc-sep) | `rvc-sep-ggml/` (model/inference/audio, adapted from BSRoformer.cpp) |
 
 ### Docs (all English now)
 
@@ -210,6 +225,7 @@ rvc-train.exe --interactive      # training wizard (also the no-args default)
 | `rvc-train-ggml/docs/usage_guide.md` | Full training workflow |
 | `rvc-train-ggml/docs/numbers_handbook.md` | How to read training parameters/log numbers |
 | `rvc-train-ggml/docs/architecture.md` | Training architecture, data flow, GGUF/cache schema |
+| `rvc-sep-ggml/README.md` | Roformer separation tool: build, usage, attribution |
 
 Some source comments reference internal docs that were **never committed** (e.g.
 `docs/handover.md`, `docs/interfaces_and_formats.md`, `docs/dev_progress.md`,

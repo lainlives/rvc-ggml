@@ -11,6 +11,7 @@ A pure C++ / [ggml](https://github.com/ggml-org/ggml) implementation of [RVC (Re
 
 ```
 ├── rvc-ggml/          inference (RVC-GGML.exe + Python model-conversion scripts)
+├── rvc-sep-ggml/      Roformer source separation (rvc-sep.exe; adapted from BSRoformer.cpp)
 ├── rvc-train-ggml/    training (rvc-prep.exe preprocessing + rvc-train.exe training/export)
 └── third_party/
     └── train.cpp/     training library (git submodule)
@@ -80,6 +81,8 @@ RVC-GGML.exe --list-devices
 ```
 
 ### 3. Training
+
+> Optional: separate vocals from a song first with a Roformer model (see `rvc-sep-ggml/README.md`).
 
 Fine-tune the official pretrained models (minimal closed loop):
 
