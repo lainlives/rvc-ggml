@@ -70,4 +70,12 @@ if(RVC_UI_BUILD_TESTS)
         "${RVC_UI_MINIAUDIO_DIR}/extras"
     )
     add_test(NAME resample COMMAND resample_test)
+
+    add_executable(normalize_test tests/normalize_test.cpp src/audio_utils.cpp src/miniaudio_impl.cpp)
+    target_include_directories(normalize_test PRIVATE
+        src include
+        "${RVC_UI_MINIAUDIO_DIR}"
+        "${RVC_UI_MINIAUDIO_DIR}/extras"
+    )
+    add_test(NAME normalize COMMAND normalize_test)
 endif()
