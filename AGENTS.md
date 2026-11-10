@@ -159,6 +159,9 @@ The log lives in a pop-out window ("Log" button); the main view shows step progr
 In-app playback uses miniaudio (`rvc-ui/src/audio_player.*`); the seek slider is a
 placeholder for a future waveform widget — keep waveform drawing cheap (precompute
 peaks once, never scan the full buffer per repaint).
+The "Multi-step" tab runs each step in isolation with a shared source registry:
+inputs can be files or any step's output; outputs can be saved anywhere.
+Auto pitch (`--proposed-pitch`) affects only the converted voice.
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 

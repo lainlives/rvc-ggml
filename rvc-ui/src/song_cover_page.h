@@ -66,7 +66,7 @@ private:
     void load_output_for_playback(const QString& path);
     bool encode_to(const QString& wav_path, const QString& target_path, QString* err);
     int total_pitch() const;
-    QStringList rvc_args(const QString& in, const QString& out) const;
+    QStringList rvc_args(const QString& in, const QString& out, bool auto_pitch) const;
     QString index_path_for(const QString& voice_model) const;
 
     // Inputs
@@ -117,7 +117,6 @@ private:
     bool running_ = false;
     bool cancel_requested_ = false;
     QElapsedTimer run_timer_;
-    int proposed_offset_ = 0;            // semitones applied by --proposed-pitch
     bool instrumental_shift_applied_ = false;
     QString work_dir_;
     QString tool_sep_;

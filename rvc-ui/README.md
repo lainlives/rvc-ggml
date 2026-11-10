@@ -23,6 +23,18 @@ Model folders are discovered from the repository `models/` tree:
 | `models/extractors/*.gguf` | RVC feature extractor (default: contentvec) |
 | `models/f0/*.gguf` | RVC f0 extractor (default: rmvpe) |
 
+## Multi-step tab
+
+Every generation step can be run in isolation: separate (vocals / instrumental),
+split background singers, convert (RVC), pitch-shift, and mix (up to three
+tracks with gains).
+
+- Inputs: any step's input can be a file via `<browse file...>` or **any other
+  step's output** (the shared source list) — arbitrary piping between steps.
+- Outputs: every step writes to an editable path and offers **Save as...** to
+  copy a result anywhere.
+- Intermediate files default to `<repo>/work/multistep/`.
+
 ## Build
 
 Requires Qt 6 (Widgets), CMake, and the `third_party/miniaudio` submodule
@@ -68,8 +80,10 @@ The UI locates its dependencies at runtime:
   is below -5 dBFS; otherwise it is left untouched.
 - "Auto pitch (proposed)": detects the median voiced f0 of the vocals and adds
   the shift that moves it to the target (155 Hz male / 255 Hz female, clamped
-  to ±12 semitones) via RVC-GGML's `--proposed-pitch`; the instrumental is
-  shifted by the same total so the mix stays in tune.
+  to ±12 semitones) via RVC-GGML's `--proposed-pitch`. Only the converted voice
+  is affected — background vocals and the instrumental keep the manual shift.
+- Defaults favour natural output: protect 0, RMS mix 0, auto-pitch disabled at
+  a 255 Hz target, F0 extractor prefers `rmvpe.gguf`.
 - The full log lives in a separate window ("Log" button, bottom left); the main
   view shows a step progress bar and a status line instead.
 - Generated outputs can be played in-app (play/pause/stop/seek, miniaudio); the

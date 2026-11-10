@@ -26,3 +26,6 @@ __pycache__/
 .vscode/
 .idea/
 *.user
+
+# editor swap files
+*.kate-swp

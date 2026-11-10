@@ -38,6 +38,7 @@ add_executable(rvc-ui
     src/main.cpp
     src/main_window.cpp
     src/song_cover_page.cpp
+    src/multi_step_page.cpp
     src/audio_utils.cpp
     src/audio_player.cpp
     src/miniaudio_impl.cpp

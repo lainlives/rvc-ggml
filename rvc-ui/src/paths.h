@@ -106,8 +106,14 @@ inline QStringList voice_models() {
     return out;
 }
 
-// Picks the preferred entry from a list: the first containing `needle`, else the first.
+// Picks the preferred entry from a list: an exact file-name match first
+// (e.g. "rmvpe.gguf"), then the first entry containing `needle`, else the first.
 inline QString preferred(const QStringList& list, const QString& needle) {
+    for (const QString& item : list) {
+        if (QFileInfo(item).fileName().compare(needle, Qt::CaseInsensitive) == 0) {
+            return item;
+        }
+    }
     for (const QString& item : list) {
         if (item.contains(needle, Qt::CaseInsensitive)) {
             return item;

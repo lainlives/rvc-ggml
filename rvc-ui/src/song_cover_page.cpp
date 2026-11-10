@@ -197,7 +197,7 @@ void SongCoverPage::build_ui() {
         protect_spin_ = new QDoubleSpinBox(row);
         protect_spin_->setRange(0.0, 0.5);
         protect_spin_->setSingleStep(0.01);
-        protect_spin_->setValue(0.33);
+        protect_spin_->setValue(0.0);
         h->addWidget(new QLabel(QStringLiteral("index rate"), row));
         h->addWidget(index_rate_spin_);
         h->addWidget(new QLabel(QStringLiteral("protect"), row));
@@ -212,11 +212,12 @@ void SongCoverPage::build_ui() {
         proposed_pitch_check_ = new QCheckBox(QStringLiteral("Auto pitch (proposed)"), row);
         pitch_threshold_spin_ = new QDoubleSpinBox(row);
         pitch_threshold_spin_->setRange(50.0, 500.0);
-        pitch_threshold_spin_->setValue(155.0);
+        pitch_threshold_spin_->setValue(255.0);
         pitch_threshold_spin_->setSuffix(QStringLiteral(" Hz"));
         pitch_threshold_spin_->setEnabled(false);
         pitch_threshold_spin_->setToolTip(QStringLiteral(
-            "Target median f0: 155 Hz (male) / 255 Hz (female); shift clamped to +/-12 semitones"));
+            "Target median f0 for the converted voice: 155 Hz (male) / 255 Hz (female); "
+            "shift clamped to +/-12 semitones. Background and instrumental keep the manual shift only."));
         connect(proposed_pitch_check_, &QCheckBox::toggled,
                 pitch_threshold_spin_, &QDoubleSpinBox::setEnabled);
         h->addWidget(proposed_pitch_check_);
@@ -231,7 +232,7 @@ void SongCoverPage::build_ui() {
         rms_mix_spin_ = new QDoubleSpinBox(row);
         rms_mix_spin_->setRange(0.0, 1.0);
         rms_mix_spin_->setSingleStep(0.05);
-        rms_mix_spin_->setValue(1.0);
+        rms_mix_spin_->setValue(0.0);
         sid_spin_ = new QSpinBox(row);
         sid_spin_->setRange(0, 500);
         device_combo_ = new QComboBox(row);
@@ -352,7 +353,7 @@ void SongCoverPage::populate_models() {
     fill(vocal_sep_combo_, paths::gguf_files(models + QStringLiteral("/roformers/vocal_separator")), QStringLiteral("FV4"));
     fill(backup_sep_combo_, paths::gguf_files(models + QStringLiteral("/roformers/backup_separator")), QStringLiteral("Male-Female"));
     fill(extractor_combo_, paths::gguf_files(models + QStringLiteral("/extractors")), QStringLiteral("contentvec"));
-    fill(f0_combo_, paths::gguf_files(models + QStringLiteral("/f0")), QStringLiteral("rmvpe"));
+    fill(f0_combo_, paths::gguf_files(models + QStringLiteral("/f0")), QStringLiteral("rmvpe.gguf"));
     fill(voice_combo_, paths::voice_models(), QString());
 
     tool_sep_ = paths::tool(QStringLiteral("rvc-sep"));
@@ -433,7 +434,7 @@ QString SongCoverPage::index_path_for(const QString& voice_model) const {
     return QString();
 }
 
-QStringList SongCoverPage::rvc_args(const QString& in, const QString& out) const {
+QStringList SongCoverPage::rvc_args(const QString& in, const QString& out, bool auto_pitch) const {
     QStringList a;
     a << QStringLiteral("--input") << in
       << QStringLiteral("--output") << out
@@ -450,7 +451,7 @@ QStringList SongCoverPage::rvc_args(const QString& in, const QString& out) const
       << QStringLiteral("--hubert") << extractor_combo_->currentData().toString()
       << QStringLiteral("--rmvpe") << f0_combo_->currentData().toString()
       << QStringLiteral("--device") << device_combo_->currentData().toString();
-    if (proposed_pitch_check_->isChecked()) {
+    if (auto_pitch && proposed_pitch_check_->isChecked()) {
         a << QStringLiteral("--proposed-pitch")
           << QString::number(pitch_threshold_spin_->value(), 'f', 1);
     }
@@ -506,9 +507,9 @@ void SongCoverPage::start_run() {
         plan_ << StepKind::ConvertBackup;
         steps_list_->addItem(QStringLiteral("\u00b7 Convert background vocals (RVC)"));
     }
-    if (total_pitch() != 0 || proposed_pitch_check_->isChecked()) {
+    if (total_pitch() != 0) {
         plan_ << StepKind::ShiftInstrumental;
-        steps_list_->addItem(QStringLiteral("\u00b7 Pitch-shift instrumental"));
+        steps_list_->addItem(QStringLiteral("\u00b7 Pitch-shift instrumental (%1 semitones)").arg(total_pitch()));
     }
     plan_ << StepKind::Mix;
     steps_list_->addItem(QStringLiteral("\u00b7 Mix and write output"));
@@ -516,7 +517,6 @@ void SongCoverPage::start_run() {
     running_ = true;
     cancel_requested_ = false;
     step_index_ = -1;
-    proposed_offset_ = 0;
     instrumental_shift_applied_ = false;
     run_timer_.start();
     progress_bar_->setValue(0);
@@ -550,30 +550,22 @@ void SongCoverPage::run_step(int index) {
                                       vocals_wav_, work_dir_ + QStringLiteral("/background.wav")});
             break;
         case StepKind::ConvertMain:
-            start_process(tool_rvc_, rvc_args(vocals_wav_, conv_main_wav_));
+            start_process(tool_rvc_, rvc_args(vocals_wav_, conv_main_wav_, true));
             break;
         case StepKind::ConvertBackup:
             start_process(tool_rvc_, rvc_args(work_dir_ + QStringLiteral("/background_stem_1.wav"),
-                                              conv_backup_wav_));
+                                              conv_backup_wav_, false));
             break;
         case StepKind::ShiftInstrumental: {
-            const int total = total_pitch() + proposed_offset_;
-            const int cents = total * 100;
-            if (proposed_offset_ != 0) {
-                log(QStringLiteral("Auto pitch: proposed shift %1 semitone(s); total instrumental shift %2.")
-                        .arg(proposed_offset_).arg(total));
-            }
-            if (cents == 0) {
-                log(QStringLiteral("Instrumental pitch shift: 0 semitones, nothing to do."));
-                complete_step();
-                return;
-            }
+            // Only the manual semitone shift moves the instrumental; "auto pitch"
+            // affects the converted voice alone.
+            const int cents = total_pitch() * 100;
             instrumental_shift_applied_ = true;
             if (!tool_sox_.isEmpty()) {
                 start_process(tool_sox_, {instrumental_wav_, shifted_instrumental_wav_,
                                           QStringLiteral("pitch"), QString::number(cents)});
             } else if (!tool_ffmpeg_.isEmpty()) {
-                const double ratio = std::pow(2.0, total / 12.0);
+                const double ratio = std::pow(2.0, total_pitch() / 12.0);
                 const QString filter = QStringLiteral("asetrate=%1*%2,aresample=%1,atempo=%3")
                                            .arg(44100)
                                            .arg(ratio)
@@ -599,19 +591,7 @@ void SongCoverPage::start_process(const QString& program, const QStringList& arg
     process_->setArguments(args);
     process_->setProcessChannelMode(QProcess::MergedChannels);
     connect(process_, &QProcess::readyReadStandardOutput, this, [this] {
-        const QString chunk = QString::fromLocal8Bit(process_->readAllStandardOutput());
-        log(chunk);
-        // Capture the auto-pitch offset reported by the main conversion so the
-        // instrumental can be shifted by the same amount.
-        if (step_index_ >= 0 && step_index_ < plan_.size() &&
-            plan_.at(step_index_) == StepKind::ConvertMain &&
-            chunk.contains(QStringLiteral("proposed pitch"))) {
-            static const QRegularExpression re(QStringLiteral("offset=([+-]?\\d+)"));
-            const QRegularExpressionMatch match = re.match(chunk);
-            if (match.hasMatch()) {
-                proposed_offset_ = match.captured(1).toInt();
-            }
-        }
+        log(QString::fromLocal8Bit(process_->readAllStandardOutput()));
     });
     connect(process_, &QProcess::finished, this, &SongCoverPage::on_process_finished);
     log(QStringLiteral(">> %1 %2").arg(program, args.join(QLatin1Char(' '))));

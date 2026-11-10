@@ -1,6 +1,7 @@
 // main_window.cpp — main window with the Song Cover flow as the first tab.
 #include "main_window.h"
 
+#include "multi_step_page.h"
 #include "song_cover_page.h"
 
 #include <QTabWidget>
@@ -10,7 +11,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     auto* tabs = new QTabWidget(this);
     tabs->addTab(new SongCoverPage(tabs), QStringLiteral("Song Cover"));
-    // "Multi-step" and "Training" tabs are planned; the scaffold keeps the
-    // tab widget so they can be added without restructuring.
+    tabs->addTab(new MultiStepPage(tabs), QStringLiteral("Multi-step"));
+    // The "Training" tab is planned; the tab widget keeps it easy to add.
     setCentralWidget(tabs);
 }
