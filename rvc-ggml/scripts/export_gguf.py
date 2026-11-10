@@ -36,6 +36,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+# Some torch/BLAS builds (observed with a ROCm torch on Python 3.14) segfault when
+# scipy's BLAS extensions are loaded after torch; preloading scipy.signal first
+# avoids the dynamic-loader conflict. Missing scipy is fine (numpy mel fallback).
+try:
+    import scipy.signal  # noqa: F401
+except ImportError:
+    pass
+
 import torch
 
 try:
@@ -228,20 +237,79 @@ def hubert_policy(name: str, data: np.ndarray) -> str:
     return "f32"
 
 
+def remap_hf_hubert_keys(state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Remap HuggingFace Wav2Vec2/HuBERT/ContentVec key names to the fairseq-style names
+    used by the RVC-GGML HuBERT module (RVC upstream ships fairseq checkpoints).
+    Unmatched keys pass through unchanged, so fairseq checkpoints are unaffected."""
+    import re
+
+    out: dict[str, torch.Tensor] = {}
+    for key, value in state.items():
+        k = key
+        # conv feature extractor: HF "conv"/"layer_norm" -> fairseq Sequential slots (0=conv, 2=group norm)
+        k = re.sub(r"^feature_extractor\.conv_layers\.(\d+)\.conv\.",
+                   r"feature_extractor.conv_layers.\1.0.", k)
+        k = re.sub(r"^feature_extractor\.conv_layers\.(\d+)\.layer_norm\.",
+                   r"feature_extractor.conv_layers.\1.2.", k)
+        # feature projection -> fairseq layer_norm (pre-projection) + post_extract_proj
+        k = k.replace("feature_projection.layer_norm.", "layer_norm.")
+        k = k.replace("feature_projection.projection.", "post_extract_proj.")
+        # positional convolution
+        k = k.replace("encoder.pos_conv_embed.conv.", "encoder.pos_conv.0.")
+        # transformer layers
+        k = re.sub(r"^encoder\.layers\.(\d+)\.attention\.", r"encoder.layers.\1.self_attn.", k)
+        k = re.sub(r"^encoder\.layers\.(\d+)\.layer_norm\.", r"encoder.layers.\1.self_attn_layer_norm.", k)
+        k = re.sub(r"^encoder\.layers\.(\d+)\.feed_forward\.intermediate_dense\.",
+                   r"encoder.layers.\1.fc1.", k)
+        k = re.sub(r"^encoder\.layers\.(\d+)\.feed_forward\.output_dense\.",
+                   r"encoder.layers.\1.fc2.", k)
+        out[k] = value
+    return out
+
+
 def export_hubert(input_path: str, out_path: str, dtype: str) -> None:
+    import json
+
     print(f"[hubert] loading {input_path}")
     ckpt = load_torch(input_path)
     state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
     cfg = ckpt.get("cfg", {}) if isinstance(ckpt, dict) else {}
     model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
 
-    layers = int(model_cfg.get("encoder_layers", 12))
-    hidden = int(model_cfg.get("encoder_embed_dim", 768))
-    ffn = int(model_cfg.get("encoder_ffn_embed_dim", 3072))
-    heads = int(model_cfg.get("encoder_attention_heads", 12))
+    # HuggingFace-format checkpoints use different key names; remap to the fairseq
+    # layout the RVC-GGML HuBERT module expects (fairseq checkpoints are unaffected).
+    state = remap_hf_hubert_keys(state)
+
+    # Architecture sizes: fairseq cfg > sibling config.json (HF) > defaults
+    hf_cfg: dict = {}
+    if not model_cfg:
+        cfg_path = Path(input_path).with_name("config.json")
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    hf_cfg = json.load(f)
+            except (OSError, ValueError):
+                hf_cfg = {}
+
+    layers = int(model_cfg.get("encoder_layers", hf_cfg.get("num_hidden_layers", 12)))
+    hidden = int(model_cfg.get("encoder_embed_dim", hf_cfg.get("hidden_size", 768)))
+    ffn = int(model_cfg.get("encoder_ffn_embed_dim", hf_cfg.get("intermediate_size", 3072)))
+    heads = int(model_cfg.get("encoder_attention_heads", hf_cfg.get("num_attention_heads", 12)))
     conv_pos = int(model_cfg.get("conv_pos", 128))
     conv_pos_groups = int(model_cfg.get("conv_pos_groups", 16))
     final_dim = int(model_cfg.get("final_dim", 256))
+
+    # Derive position-conv kernel/groups and the final-projection width from the tensors
+    # (covers both naming schemes and HF exports missing cfg fields).
+    for k, v in state.items():
+        if not torch.is_tensor(v):
+            continue
+        if k.endswith(".weight_v") and "pos_conv" in k:
+            conv_pos = int(v.shape[-1])
+            if v.dim() == 3 and v.shape[1] > 0:
+                conv_pos_groups = max(1, hidden // int(v.shape[1]))
+        elif k.endswith("final_proj.weight"):
+            final_dim = int(v.shape[0])
 
     print(f"  config: layers={layers} hidden={hidden} ffn={ffn} heads={heads} "
           f"conv_pos={conv_pos}/{conv_pos_groups} final_dim={final_dim}")
@@ -473,9 +541,12 @@ def export_rvc_model(input_path: str, out_path: str, dtype: str) -> None:
     if len(config) >= 3:
         config[-3] = n_spk  # override the speaker count
 
-    version = ckpt.get("version") or "v1"
+    version = ckpt.get("version")
     if version not in ("v1", "v2"):
-        version = "v1"
+        # Some checkpoints (e.g. plain training saves) carry no 'version' field;
+        # infer it from the phone-embedding input width (v1: 256, v2: 768).
+        emb = weight.get("emb_phone.weight", weight.get("enc_p.emb_phone.weight"))
+        version = "v2" if (emb is not None and emb.shape[-1] >= 768) else "v1"
     if_f0 = int(ckpt.get("f0", 1))
 
     sr = config[-1]
