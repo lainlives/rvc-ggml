@@ -40,6 +40,12 @@ inline QString root() {
     if (!env.isEmpty() && QFileInfo::exists(QDir(env).filePath(QStringLiteral("models")))) {
         return QDir(env).absolutePath();
     }
+#ifdef RVC_UI_DEFAULT_ROOT
+    const QString baked = QStringLiteral(RVC_UI_DEFAULT_ROOT);
+    if (!baked.isEmpty() && QFileInfo::exists(QDir(baked).filePath(QStringLiteral("models")))) {
+        return QDir(baked).absolutePath();
+    }
+#endif
     const QString from_exe = find_up(QCoreApplication::applicationDirPath(), QStringLiteral("models"));
     if (!from_exe.isEmpty()) {
         return from_exe;
@@ -52,6 +58,12 @@ inline QString tools_dir() {
     if (!env.isEmpty()) {
         return QDir(env).absolutePath();
     }
+#ifdef RVC_UI_DEFAULT_TOOLS_DIR
+    const QString baked = QStringLiteral(RVC_UI_DEFAULT_TOOLS_DIR);
+    if (!baked.isEmpty() && QFileInfo::exists(QDir(baked).filePath(tool_name(QStringLiteral("rvc-sep"))))) {
+        return QDir(baked).absolutePath();
+    }
+#endif
     return QCoreApplication::applicationDirPath();
 }
 

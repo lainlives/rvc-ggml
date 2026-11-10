@@ -8,6 +8,8 @@
 
 #include "audio_utils.h"
 
+#include "miniaudio.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
@@ -112,26 +114,37 @@ std::vector<float> windowed_sinc_resample(const std::vector<float>& in, int src_
 
 namespace audio {
 
-Buffer load_wav(const std::string& path) {
-    drwav wav;
-#ifdef _WIN32
-    const std::filesystem::path p(path);
-    const bool ok = drwav_init_file_w(&wav, p.wstring().c_str(), nullptr);
-#else
-    const bool ok = drwav_init_file(&wav, path.c_str(), nullptr);
-#endif
-    if (!ok) {
-        throw std::runtime_error("Cannot open WAV file: " + path);
+Buffer load_audio(const std::string& path) {
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path.c_str(), &config, &decoder) != MA_SUCCESS) {
+        throw std::runtime_error("Cannot open audio file (WAV/FLAC/MP3/OGG): " + path);
     }
-    const drwav_uint64 frames = wav.totalPCMFrameCount;
+    const int channels = static_cast<int>(decoder.outputChannels);
+    if (channels <= 0) {
+        ma_decoder_uninit(&decoder);
+        throw std::runtime_error("Audio file has no channels: " + path);
+    }
     Buffer out;
-    out.channels = static_cast<int>(wav.channels);
-    out.sample_rate = static_cast<int>(wav.sampleRate);
-    out.data.resize(static_cast<size_t>(frames) * out.channels);
-    const drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, frames, out.data.data());
-    drwav_uninit(&wav);
-    if (got != frames) {
-        throw std::runtime_error("Failed to read WAV data: " + path);
+    out.channels = channels;
+    out.sample_rate = static_cast<int>(decoder.outputSampleRate);
+
+    const ma_uint32 chunk_frames = 16384;
+    std::vector<float> chunk(static_cast<size_t>(chunk_frames) * static_cast<size_t>(channels));
+    for (;;) {
+        ma_uint64 got = 0;
+        const ma_result result = ma_decoder_read_pcm_frames(&decoder, chunk.data(), chunk_frames, &got);
+        if (got > 0) {
+            out.data.insert(out.data.end(), chunk.begin(),
+                            chunk.begin() + static_cast<size_t>(got) * static_cast<size_t>(channels));
+        }
+        if (result != MA_SUCCESS || got == 0) {
+            break;  // MA_AT_END or end of stream
+        }
+    }
+    ma_decoder_uninit(&decoder);
+    if (out.data.empty()) {
+        throw std::runtime_error("Failed to read audio data: " + path);
     }
     return out;
 }
@@ -258,17 +271,30 @@ Buffer mix(const std::vector<std::pair<Buffer, float>>& tracks) {
             out.data[i] += buffer.data[i] * gain;
         }
     }
+    return out;
+}
+
+float apply_peak_normalization(Buffer& buffer, float quiet_db, float target_db) {
     float peak = 0.0f;
-    for (float v : out.data) {
+    for (float v : buffer.data) {
         peak = std::max(peak, std::fabs(v));
     }
-    if (peak > 0.999f) {
-        const float scale = 0.999f / peak;
-        for (float& v : out.data) {
-            v *= scale;
-        }
+    if (peak <= 0.0f) {
+        return 0.0f;
     }
-    return out;
+    const float peak_db = 20.0f * std::log10(peak);
+    float gain_db = 0.0f;
+    if (peak_db >= 0.0f || peak_db < quiet_db) {
+        gain_db = target_db - peak_db;
+    }
+    if (gain_db == 0.0f) {
+        return 0.0f;
+    }
+    const float gain = std::pow(10.0f, gain_db / 20.0f);
+    for (float& v : buffer.data) {
+        v *= gain;
+    }
+    return gain_db;
 }
 
 } // namespace audio

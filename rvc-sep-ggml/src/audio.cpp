@@ -9,6 +9,8 @@
 
 #include "bs_roformer/audio.h"
 
+#include "miniaudio.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -120,25 +122,37 @@ namespace {
 } // namespace
 
 AudioBuffer AudioFile::Load(const std::string& path, int target_sample_rate) {
-    drwav wav;
-#ifdef _WIN32
-    const std::filesystem::path p(path);
-    const bool ok = drwav_init_file_w(&wav, p.wstring().c_str(), nullptr);
-#else
-    const bool ok = drwav_init_file(&wav, path.c_str(), nullptr);
-#endif
-    if (!ok) {
-        throw std::runtime_error("Cannot open WAV file: " + path);
+    // Decode WAV / FLAC / MP3 / Ogg Vorbis through miniaudio.
+    ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    ma_decoder decoder;
+    if (ma_decoder_init_file(path.c_str(), &config, &decoder) != MA_SUCCESS) {
+        throw std::runtime_error("Cannot open audio file (WAV/FLAC/MP3/OGG): " + path);
+    }
+    const unsigned int channels = static_cast<unsigned int>(decoder.outputChannels);
+    const unsigned int sample_rate = static_cast<unsigned int>(decoder.outputSampleRate);
+    if (channels == 0) {
+        ma_decoder_uninit(&decoder);
+        throw std::runtime_error("Audio file has no channels: " + path);
     }
 
-    const drwav_uint64 frames = wav.totalPCMFrameCount;
-    const unsigned int channels = wav.channels;
-    const unsigned int sample_rate = wav.sampleRate;
-    std::vector<float> interleaved(static_cast<size_t>(frames) * channels);
-    const drwav_uint64 got = drwav_read_pcm_frames_f32(&wav, frames, interleaved.data());
-    drwav_uninit(&wav);
-    if (got != frames) {
-        throw std::runtime_error("Failed to read WAV data: " + path);
+    std::vector<float> interleaved;
+    const ma_uint32 chunk_frames = 16384;
+    std::vector<float> chunk(static_cast<size_t>(chunk_frames) * channels);
+    for (;;) {
+        ma_uint64 got = 0;
+        const ma_result result = ma_decoder_read_pcm_frames(&decoder, chunk.data(), chunk_frames, &got);
+        if (got > 0) {
+            interleaved.insert(interleaved.end(), chunk.begin(),
+                               chunk.begin() + static_cast<size_t>(got) * channels);
+        }
+        if (result != MA_SUCCESS || got == 0) {
+            break;  // MA_AT_END or end of stream
+        }
+    }
+    ma_decoder_uninit(&decoder);
+    const size_t frames = interleaved.size() / channels;
+    if (frames == 0) {
+        throw std::runtime_error("Failed to read audio data: " + path);
     }
 
     // Convert to interleaved stereo float32

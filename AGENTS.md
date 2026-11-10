@@ -16,7 +16,7 @@ Pure C++ / [ggml](https://github.com/ggml-org/ggml) reimplementation of
 
 ## Golden rules
 
-1. **Never modify `third_party/train.cpp`** (upstream git submodule; has its own docs, partly Chinese).
+1. **Never modify `third_party/*` submodules** (`train.cpp`, `huggingface-hub-cpp`, `miniaudio`) — third-party checkouts.
 2. Keep PowerShell scripts (`*.ps1`) **ASCII-only** — PowerShell 5.1 mis-parses UTF-8 without BOM.
 3. Keep C++ console/log/error strings **ASCII** and keep `printf`/`cout` format specifiers and
    argument order exactly (some buffers are sized for the worst case).
@@ -57,9 +57,10 @@ powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1 -A
 - Toolchain overrides for `dev_build.ps1`: `RVCT_VCVARS`, `RVCT_CMAKE`, `RVCT_NINJA`.
 - Language level: C++20; MSVC `/utf-8` everywhere; `/W3` for inference targets, `/W4` for
   training targets; MSVC static runtime for `rvc-ggml`.
-- The Qt6 UI is a separate build: `cmake -S rvc-ui -B build -G Ninja -DCMAKE_BUILD_TYPE=Release`.
-  It locates the CLIs via `RVC_TOOLS_DIR` (else next to its executable) and the model tree via
-  `RVC_ROOT` (else by walking up from the executable for a `models/` directory).
+- The Qt6 UI is a separate build: `cmake -S rvc-ui -B build -G Ninja -DCMAKE_BUILD_TYPE=Release`
+  (needs the `third_party/miniaudio` submodule). It locates the CLIs via `RVC_TOOLS_DIR` (else
+  next to its executable) and the model tree via `RVC_ROOT` (else by walking up for `models/`);
+  both support build-time fallbacks via `-DRVC_UI_DEFAULT_TOOLS_DIR` / `-DRVC_UI_DEFAULT_ROOT`.
 
 ### MinGW cross-check (Windows target from Linux, optional)
 
@@ -148,6 +149,8 @@ rvc-sep.exe "models\roformers\<model>.gguf" input\song.wav output\vocals.wav   #
 Qt6 Widgets app; the first tab is the Song Cover one-click flow (vocal/instrumental separation,
 optional background-singer split, RVC conversion, pitch shift, mix). See `rvc-ui/README.md`.
 Requires Qt6 Widgets; `sox` (or ffmpeg) only when pitch != 0.
+Input: WAV/FLAC/MP3/OGG (miniaudio); output: WAV natively, FLAC/MP3/OGG via ffmpeg.
+The mix is peak-normalised to -1 dBFS when clipping or below -5 dBFS.
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 

@@ -14,17 +14,17 @@ struct AudioBuffer {
 };
 
 /**
- * WAV file I/O for rvc-sep.
+ * Audio file I/O for rvc-sep.
  *
+ * Input: WAV / FLAC / MP3 / Ogg Vorbis (decoded through miniaudio).
  * Audio is automatically resampled to the target sample rate (default 44100 Hz,
  * the Roformer models' training rate) and converted to interleaved stereo float32.
- * Unlike the upstream BSRoformer.cpp (which used FFmpeg/libav), this build reads
- * and writes WAV only; use ffmpeg to convert other formats first.
+ * Output: WAV (float32).
  */
 class AudioFile {
 public:
     /**
-     * Load audio from a WAV file (any PCM/IEEE-float bit depth supported by dr_wav).
+     * Load audio from a file (any format supported by miniaudio).
      * Mono is expanded to stereo, >2 channels are downmixed, and the result is
      * resampled to target_sample_rate when necessary.
      * @throws std::runtime_error if the file cannot be opened or decoded.

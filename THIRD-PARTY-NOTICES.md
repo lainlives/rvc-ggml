@@ -232,3 +232,14 @@ SOFTWARE.
 > Note: `rvc-sep-ggml/` is an adaptation (WAV I/O via dr_wav, monorepo build
 > integration); the model implementations themselves are derived from the
 > original project.
+
+---
+
+## 7. miniaudio (and the bundled stb_vorbis)
+
+- Source: https://github.com/mackron/miniaudio (v0.11.26, `third_party/miniaudio`)
+- License: MIT-0 / public domain, dual-licensed (see the submodule's `LICENSE`).
+  The bundled `extras/stb_vorbis.c` (https://github.com/nothings/stb) is
+  public domain / MIT, dual-licensed.
+- Used by `rvc-ui` and `rvc-sep-ggml` for audio decoding
+  (WAV / FLAC / MP3 / Ogg Vorbis).

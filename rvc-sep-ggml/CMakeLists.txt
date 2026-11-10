@@ -71,6 +71,15 @@ if(NOT TARGET ggml)
 endif()
 
 # ================================================================
+# miniaudio (decode: WAV/FLAC/MP3/Ogg Vorbis)
+# ================================================================
+set(RVC_SEP_MINIAUDIO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/miniaudio"
+    CACHE PATH "miniaudio source directory")
+if(NOT EXISTS "${RVC_SEP_MINIAUDIO_DIR}/miniaudio.h")
+    message(FATAL_ERROR "miniaudio not found at ${RVC_SEP_MINIAUDIO_DIR}; run: git submodule update --init third_party/miniaudio")
+endif()
+
+# ================================================================
 # Core library + CLI
 # ================================================================
 find_package(Threads REQUIRED)
@@ -79,8 +88,13 @@ add_library(rvc_sep_core STATIC
     src/model.cpp
     src/inference.cpp
     src/audio.cpp
+    src/miniaudio_impl.cpp
 )
 target_include_directories(rvc_sep_core PUBLIC include src)
+target_include_directories(rvc_sep_core PRIVATE
+    "${RVC_SEP_MINIAUDIO_DIR}"
+    "${RVC_SEP_MINIAUDIO_DIR}/extras"
+)
 target_link_libraries(rvc_sep_core PUBLIC ggml Threads::Threads)
 
 if(MSVC)

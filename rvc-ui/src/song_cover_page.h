@@ -1,6 +1,7 @@
 // song_cover_page.h — one-click song-cover flow.
 #pragma once
 
+#include <QElapsedTimer>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -47,6 +48,7 @@ private:
     void on_process_finished(int exit_code, int exit_status);
     void run_step(int index);
     void run_mix();
+    bool encode_to(const QString& wav_path, const QString& target_path, QString* err);
     bool prepare_instrumental();
     int total_pitch() const;
     QStringList rvc_args(const QString& in, const QString& out) const;
@@ -85,6 +87,7 @@ private:
     int step_index_ = -1;
     bool running_ = false;
     bool cancel_requested_ = false;
+    QElapsedTimer run_timer_;
     QString work_dir_;
     QString tool_sep_;
     QString tool_rvc_;

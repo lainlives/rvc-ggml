@@ -68,7 +68,7 @@ void SongCoverPage::build_ui() {
         auto* h = new QHBoxLayout(row);
         h->setContentsMargins(0, 0, 0, 0);
         song_edit_ = new QLineEdit(row);
-        song_edit_->setPlaceholderText(QStringLiteral("path to a song file (WAV)"));
+        song_edit_->setPlaceholderText(QStringLiteral("path to a song file (WAV/FLAC/MP3/OGG)"));
         auto* browse = new QPushButton(QStringLiteral("Browse..."), row);
         connect(browse, &QPushButton::clicked, this, &SongCoverPage::browse_song);
         h->addWidget(song_edit_, 1);
@@ -298,7 +298,7 @@ void SongCoverPage::refresh_models() {
 
 void SongCoverPage::browse_song() {
     const QString file = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open song"), song_edit_->text(), QStringLiteral("Audio (*.wav)"));
+        this, QStringLiteral("Open song"), song_edit_->text(), QStringLiteral("Audio (*.wav *.flac *.mp3 *.ogg)"));
     if (file.isEmpty()) {
         return;
     }
@@ -312,7 +312,7 @@ void SongCoverPage::browse_song() {
 
 void SongCoverPage::browse_output() {
     const QString file = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Output file"), output_edit_->text(), QStringLiteral("Audio (*.wav)"));
+        this, QStringLiteral("Output file"), output_edit_->text(), QStringLiteral("Audio (*.wav *.flac *.mp3 *.ogg)"));
     if (!file.isEmpty()) {
         output_edit_->setText(file);
     }
@@ -432,6 +432,7 @@ void SongCoverPage::start_run() {
     running_ = true;
     cancel_requested_ = false;
     step_index_ = -1;
+    run_timer_.start();
     run_button_->setEnabled(false);
     cancel_button_->setEnabled(true);
 
@@ -553,8 +554,8 @@ bool SongCoverPage::prepare_instrumental() {
         } else if (QFile::exists(plain)) {
             // Vocals-only model (e.g. FV4): instrumental = song - vocals.
             log(QStringLiteral("Computing instrumental (song - vocals)..."));
-            audio::Buffer song = audio::resample(audio::to_stereo(audio::load_wav(song_edit_->text().toStdString())), 44100);
-            audio::Buffer voc = audio::resample(audio::to_stereo(audio::load_wav(plain.toStdString())), 44100);
+            audio::Buffer song = audio::resample(audio::to_stereo(audio::load_audio(song_edit_->text().toStdString())), 44100);
+            audio::Buffer voc = audio::resample(audio::to_stereo(audio::load_audio(plain.toStdString())), 44100);
             audio::Buffer inst = audio::subtract(song, voc);
             audio::save_wav(instrumental_wav_.toStdString(), inst);
         } else {
@@ -577,28 +578,48 @@ void SongCoverPage::run_mix() {
 
         const QString instrumental_file = QFile::exists(shifted_instrumental_wav_)
             ? shifted_instrumental_wav_ : instrumental_wav_;
-        audio::Buffer instrumental = audio::resample(audio::to_stereo(audio::load_wav(instrumental_file.toStdString())), 44100);
-        audio::Buffer main = audio::resample(audio::to_stereo(audio::load_wav(conv_main_wav_.toStdString())), 44100);
+        audio::Buffer instrumental = audio::resample(audio::to_stereo(audio::load_audio(instrumental_file.toStdString())), 44100);
+        audio::Buffer main = audio::resample(audio::to_stereo(audio::load_audio(conv_main_wav_.toStdString())), 44100);
 
         std::vector<std::pair<audio::Buffer, float>> tracks;
         tracks.emplace_back(std::move(instrumental), audio::db_to_linear(static_cast<float>(inst_gain_spin_->value())));
         tracks.emplace_back(std::move(main), audio::db_to_linear(static_cast<float>(main_gain_spin_->value())));
         if (split_backup_check_->isChecked() && QFile::exists(conv_backup_wav_)) {
-            audio::Buffer backup = audio::resample(audio::to_stereo(audio::load_wav(conv_backup_wav_.toStdString())), 44100);
+            audio::Buffer backup = audio::resample(audio::to_stereo(audio::load_audio(conv_backup_wav_.toStdString())), 44100);
             tracks.emplace_back(std::move(backup), audio::db_to_linear(static_cast<float>(backup_gain_spin_->value())));
         }
 
         audio::Buffer mixed = audio::mix(tracks);
+        const float norm_db = audio::apply_peak_normalization(mixed);
+        if (norm_db != 0.0f) {
+            log(QStringLiteral("Peak normalization: %1%2 dB (to -1 dBFS)")
+                    .arg(norm_db > 0.0f ? QStringLiteral("+") : QString())
+                    .arg(static_cast<double>(norm_db), 0, 'f', 1));
+        }
         const int out_sr = output_sr_combo_->currentData().toInt();
         if (out_sr != 44100) {
             mixed = audio::resample(mixed, out_sr);
         }
-        audio::save_wav(output_edit_->text().toStdString(), mixed);
+
+        const QString target = output_edit_->text();
+        if (target.endsWith(QStringLiteral(".wav"), Qt::CaseInsensitive)) {
+            audio::save_wav(target.toStdString(), mixed);
+        } else {
+            const QString wav_path = work_dir_ + QStringLiteral("/mix.wav");
+            audio::save_wav(wav_path.toStdString(), mixed);
+            QString err;
+            if (!encode_to(wav_path, target, &err)) {
+                QApplication::restoreOverrideCursor();
+                set_step_state(step_index_, QChar(0x2717));
+                fail(err);
+                return;
+            }
+        }
 
         QApplication::restoreOverrideCursor();
         set_step_state(step_index_, QChar(0x2713));
         log(QStringLiteral("Wrote %1 (%2 s @ %3 Hz)")
-                .arg(output_edit_->text())
+                .arg(target)
                 .arg(static_cast<double>(mixed.frames()) / mixed.sample_rate, 0, 'f', 2)
                 .arg(mixed.sample_rate));
         finish_run(true);
@@ -607,6 +628,47 @@ void SongCoverPage::run_mix() {
         set_step_state(step_index_, QChar(0x2717));
         fail(QString::fromStdString(e.what()));
     }
+}
+
+bool SongCoverPage::encode_to(const QString& wav_path, const QString& target_path, QString* err) {
+    if (tool_ffmpeg_.isEmpty()) {
+        *err = QStringLiteral("ffmpeg was not found; it is required for FLAC/MP3/OGG output");
+        return false;
+    }
+    QStringList args;
+    args << QStringLiteral("-y") << QStringLiteral("-i") << wav_path;
+    const QString lower = target_path.toLower();
+    if (lower.endsWith(QStringLiteral(".flac"))) {
+        args << QStringLiteral("-c:a") << QStringLiteral("flac");
+    } else if (lower.endsWith(QStringLiteral(".mp3"))) {
+        args << QStringLiteral("-c:a") << QStringLiteral("libmp3lame")
+             << QStringLiteral("-q:a") << QStringLiteral("2");
+    } else if (lower.endsWith(QStringLiteral(".ogg"))) {
+        args << QStringLiteral("-c:a") << QStringLiteral("libvorbis")
+             << QStringLiteral("-q:a") << QStringLiteral("5");
+    } else {
+        *err = QStringLiteral("Unsupported output extension (use .wav, .flac, .mp3 or .ogg)");
+        return false;
+    }
+    args << target_path;
+    log(QStringLiteral(">> %1 %2").arg(tool_ffmpeg_, args.join(QLatin1Char(' '))));
+
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    proc.start(tool_ffmpeg_, args);
+    if (!proc.waitForFinished(600000)) {
+        *err = QStringLiteral("ffmpeg did not finish in time");
+        return false;
+    }
+    const QByteArray out = proc.readAllStandardOutput();
+    if (!out.isEmpty()) {
+        log(QString::fromLocal8Bit(out));
+    }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        *err = QStringLiteral("ffmpeg failed (exit code %1)").arg(proc.exitCode());
+        return false;
+    }
+    return true;
 }
 
 void SongCoverPage::fail(const QString& message) {
@@ -621,6 +683,8 @@ void SongCoverPage::finish_run(bool success) {
     cancel_button_->setEnabled(false);
     if (success) {
         log(QStringLiteral("Song cover generated successfully."));
+        log(QStringLiteral("Total time: %1 s (start -> file written)")
+                .arg(run_timer_.elapsed() / 1000.0, 0, 'f', 1));
     }
 }
 
