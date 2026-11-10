@@ -4,3 +4,6 @@
 [submodule "third_party/huggingface-hub-cpp"]
 	path = third_party/huggingface-hub-cpp
 	url = https://github.com/agonzc34/huggingface-hub-cpp
+[submodule "third_party/miniaudio"]
+	path = third_party/miniaudio
+	url = https://github.com/mackron/miniaudio
