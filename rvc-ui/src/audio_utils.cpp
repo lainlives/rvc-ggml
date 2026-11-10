@@ -36,15 +36,13 @@ double kaiser(double n, double half_len, double beta) {
     return bessel_i0(beta * std::sqrt(arg)) / bessel_i0(beta);
 }
 
-int64_t gcd_i64(int64_t a, int64_t b) {
-    while (b != 0) {
-        const int64_t t = a % b;
-        a = b;
-        b = t;
-    }
-    return a < 0 ? -a : a;
-}
 
+// Windowed-sinc resampling, evaluated directly per output sample:
+//   pos = i / ratio (input-sample position), fc = 0.475 * min(1, ratio) cycles/sample,
+//   Kaiser window (beta 8.5), half-width 16 input samples, per-output normalization.
+//   The kernel is precomputed on a fine grid and linearly interpolated.
+// (Replaces an earlier phase-table implementation whose per-phase DC
+//  normalization degenerated for ratios such as 32000 -> 44100.)
 std::vector<float> windowed_sinc_resample(const std::vector<float>& in, int src_sr, int dst_sr) {
     if (src_sr <= 0 || dst_sr <= 0) {
         throw std::runtime_error("Resampling sample rates must be positive");
@@ -52,76 +50,60 @@ std::vector<float> windowed_sinc_resample(const std::vector<float>& in, int src_
     if (src_sr == dst_sr || in.empty()) {
         return in;
     }
-    const int64_t g = gcd_i64(src_sr, dst_sr);
-    const int64_t U = dst_sr / g;
-    const int64_t D = src_sr / g;
-    if (U > 512) {
-        const int64_t n = static_cast<int64_t>(in.size());
-        const int64_t out_len = std::max<int64_t>(1, static_cast<int64_t>(std::llround(n * static_cast<double>(dst_sr) / src_sr)));
-        std::vector<float> out(static_cast<size_t>(out_len));
-        for (int64_t i = 0; i < out_len; ++i) {
-            const double pos = static_cast<double>(i) * src_sr / dst_sr;
-            const int64_t l = std::clamp<int64_t>(static_cast<int64_t>(pos), 0, n - 1);
-            const int64_t r = std::min<int64_t>(n - 1, l + 1);
-            const double f = pos - static_cast<double>(l);
-            out[static_cast<size_t>(i)] = static_cast<float>(
-                in[static_cast<size_t>(l)] * (1.0 - f) + in[static_cast<size_t>(r)] * f);
-        }
-        return out;
-    }
-
-    const double fs_max = static_cast<double>(std::max(U, D));
-    const double fc = 0.95 * static_cast<double>(std::min(src_sr, dst_sr)) / fs_max;
-    const double beta = 7.865;
-    const int64_t L = 11;
-    const int64_t H = static_cast<int64_t>(std::ceil(L * U));
-    const int64_t ntaps = 2 * H + 1;
-
-    std::vector<double> phase_coef(static_cast<size_t>(U) * ntaps, 0.0);
-    for (int64_t p = 0; p < U; ++p) {
-        double* row = phase_coef.data() + static_cast<size_t>(p) * ntaps;
-        double sum = 0.0;
-        for (int64_t k = 0; k < ntaps; ++k) {
-            const double t = static_cast<double>(k - H) - static_cast<double>(p) / U;
-            const double x = 2.0 * fc * t;
-            const double sinc = (std::abs(x) < 1e-12) ? 1.0 : std::sin(kPi * x) / (kPi * x);
-            const double w = kaiser(t, static_cast<double>(H) / U, beta);
-            row[k] = 2.0 * fc * sinc * w;
-            sum += row[k];
-        }
-        if (sum != 0.0) {
-            for (int64_t k = 0; k < ntaps; ++k) row[k] /= sum;
-        }
-    }
-
     const int64_t n = static_cast<int64_t>(in.size());
-    std::vector<float> padded(static_cast<size_t>(n + 2 * H));
-    for (int64_t i = 0; i < H; ++i) {
-        int64_t idx = H - i;
-        if (idx >= n) idx = n - 1 - (idx - (n - 1));
-        padded[static_cast<size_t>(i)] = in[static_cast<size_t>(std::clamp<int64_t>(idx, 0, n - 1))];
-    }
-    for (int64_t i = 0; i < n; ++i) padded[static_cast<size_t>(H + i)] = in[static_cast<size_t>(i)];
-    for (int64_t i = 0; i < H; ++i) {
-        int64_t idx = n - 2 - i;
-        if (idx < 0) idx = -idx;
-        padded[static_cast<size_t>(H + n + i)] = in[static_cast<size_t>(std::clamp<int64_t>(idx, 0, n - 1))];
-    }
-
     const int64_t out_len = std::max<int64_t>(1, static_cast<int64_t>(std::llround(
-        n * static_cast<double>(dst_sr) / src_sr)));
+        static_cast<double>(n) * dst_sr / src_sr)));
+    const double ratio = static_cast<double>(dst_sr) / src_sr;
+    const double fc = 0.475 * std::min(1.0, ratio);  // cycles per input sample
+    const double half = 16.0;                        // kernel half-width (input samples)
+    const double beta = 8.5;
+
+    // Kernel lookup table (128 grid points per input sample).
+    const int64_t os = 128;
+    const int64_t table_n = static_cast<int64_t>(std::ceil(half * os));
+    std::vector<double> table(static_cast<size_t>(2 * table_n + 1));
+    const double inv_i0_beta = 1.0 / bessel_i0(beta);
+    for (int64_t k = -table_n; k <= table_n; ++k) {
+        const double x = static_cast<double>(k) / os;
+        const double r = x / half;
+        const double arg = 1.0 - r * r;
+        const double w = arg > 0.0 ? bessel_i0(beta * std::sqrt(arg)) * inv_i0_beta : 0.0;
+        const double sx = 2.0 * fc * x;
+        const double sinc = (std::abs(sx) < 1e-12) ? 1.0 : std::sin(kPi * sx) / (kPi * sx);
+        table[static_cast<size_t>(k + table_n)] = 2.0 * fc * sinc * w;
+    }
+    auto kernel_at = [&](double x) -> double {
+        const double idx = std::clamp(x * os, -static_cast<double>(table_n),
+                                      static_cast<double>(table_n));
+        const int64_t i0i = static_cast<int64_t>(std::floor(idx)) + table_n;
+        const int64_t i1i = std::min<int64_t>(i0i + 1, 2 * table_n);
+        const double f = idx - std::floor(idx);
+        return table[static_cast<size_t>(i0i)] * (1.0 - f) +
+               table[static_cast<size_t>(i1i)] * f;
+    };
+
+    auto sample_at = [n, &in](int64_t j) -> double {
+        if (j < 0) j = -j;
+        if (j >= n) j = 2 * (n - 1) - j;
+        if (j < 0) j = 0;
+        if (j >= n) j = n - 1;
+        return static_cast<double>(in[static_cast<size_t>(j)]);
+    };
+
     std::vector<float> out(static_cast<size_t>(out_len));
     for (int64_t i = 0; i < out_len; ++i) {
-        const int64_t m0 = i * D;
-        const int64_t j0 = m0 / U;
-        const int64_t p = m0 - j0 * U;
-        const double* row = phase_coef.data() + static_cast<size_t>(p) * ntaps;
+        const double pos = static_cast<double>(i) / ratio;
+        const int64_t j0 = static_cast<int64_t>(std::floor(pos - half));
+        const int64_t j1 = static_cast<int64_t>(std::ceil(pos + half));
         double acc = 0.0;
-        const int64_t base = j0 - H;
-        for (int64_t k = 0; k < ntaps; ++k) {
-            acc += static_cast<double>(padded[static_cast<size_t>(base + k + H)]) * row[k];
+        double wsum = 0.0;
+        for (int64_t j = j0; j <= j1; ++j) {
+            const double t = static_cast<double>(j) - pos;
+            const double w = kernel_at(t);
+            acc += sample_at(j) * w;
+            wsum += w;
         }
-        out[static_cast<size_t>(i)] = static_cast<float>(acc);
+        out[static_cast<size_t>(i)] = (wsum != 0.0) ? static_cast<float>(acc / wsum) : 0.0f;
     }
     return out;
 }

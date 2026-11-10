@@ -1,3 +1,6 @@
 [submodule "third_party/train.cpp"]
 	path = third_party/train.cpp
 	url = https://github.com/Chui-Las/train.cpp
+[submodule "third_party/huggingface-hub-cpp"]
+	path = third_party/huggingface-hub-cpp
+	url = https://github.com/agonzc34/huggingface-hub-cpp

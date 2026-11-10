@@ -261,6 +261,10 @@ Some source comments reference internal docs that were **never committed** (e.g.
 - `rvc-train-ggml/src/prep/{feat,cache}.cpp` implement exact reproductions of upstream Python
   quirks — do not "clean up" numerical code without cross-checking
   `technical_03_unified_implementation_python_to_ggml.md` and the training docs.
+- The audio resampler is triplicated (`rvc-ggml/src/audio/audio_io.cpp`, `rvc-sep-ggml/src/audio.cpp`,
+  `rvc-ui/src/audio_utils.cpp`) — keep the three copies in sync. An older phase-table version
+  produced sign-flipped spikes for some ratios (e.g. 32k → 44.1k); `rvc-ui` carries a regression
+  test (`-DRVC_UI_BUILD_TESTS=ON`, target `resample_test`).
 
 ## Workflow expectations for agents
 

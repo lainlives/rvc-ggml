@@ -35,3 +35,12 @@ target_link_libraries(rvc-ui PRIVATE Qt6::Widgets)
 if(MSVC)
     target_compile_options(rvc-ui PRIVATE /W3)
 endif()
+
+# ---------------------------------------------------------------- tests
+option(RVC_UI_BUILD_TESTS "build rvc-ui tests" ON)
+if(RVC_UI_BUILD_TESTS)
+    enable_testing()
+    add_executable(resample_test tests/resample_test.cpp src/audio_utils.cpp)
+    target_include_directories(resample_test PRIVATE src include)
+    add_test(NAME resample COMMAND resample_test)
+endif()
