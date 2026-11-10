@@ -4,6 +4,7 @@ A pure C++ / [ggml](https://github.com/ggml-org/ggml) implementation of [RVC (Re
 
 - **rvc-ggml**: inference. A complete port of the Python/PyTorch RVC inference chain (HuBERT features → RMVPE pitch → VITS synthesis → FAISS retrieval) to C++ + ggml; models are distributed in GGUF format.
 - **rvc-train-ggml**: training. Based on [train.cpp](https://github.com/Chui-Las/train.cpp) v0.4.0 (a C++ deep-learning training library with autograd + Vulkan backend, on-device optimizer and device-local training buffers), it implements RVC preprocessing, the GAN training loop and inference-model export, forming a "train → export GGUF → inference" closed loop with rvc-ggml.
+- **rvc-ui**: Qt6 Widgets desktop UI — one-click song cover (vocal separation → RVC conversion → mix); multi-step and training tabs planned.
 
 > Design goal: output numerically and perceptually consistent with the original Python version (exported models pass strict self-tests with corr=1.0000; end-to-end corr ≥ 0.999).
 
@@ -13,6 +14,7 @@ A pure C++ / [ggml](https://github.com/ggml-org/ggml) implementation of [RVC (Re
 ├── rvc-ggml/          inference (RVC-GGML.exe + Python model-conversion scripts)
 ├── rvc-sep-ggml/      Roformer source separation (rvc-sep.exe; adapted from BSRoformer.cpp)
 ├── rvc-train-ggml/    training (rvc-prep.exe preprocessing + rvc-train.exe training/export)
+├── rvc-ui/            Qt6 desktop UI (song cover; multi-step/training tabs planned)
 └── third_party/
     └── train.cpp/     training library (git submodule)
 ```

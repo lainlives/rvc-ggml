@@ -8,6 +8,7 @@ Pure C++ / [ggml](https://github.com/ggml-org/ggml) reimplementation of
 - `rvc-sep-ggml/` — Roformer vocal/source separation (`rvc-sep.exe`; adapted from BSRoformer.cpp).
 - `rvc-train-ggml/` — training (`rvc-prep.exe` preprocessing + `rvc-train.exe` training/export),
   backend = [train.cpp](https://github.com/Chui-Las/train.cpp) submodule (`third_party/train.cpp`).
+- `rvc-ui/` — Qt6 desktop UI (Song Cover one-click flow; multi-step/training tabs planned).
 - Primary platform: **Windows 10/11 x64, MSVC + Ninja**. There is **no CI and no unit-test
   framework** — verification is via built-in self-tests and the Python check scripts.
 - Docs and source strings were translated from Chinese to English (Nov 2026). Git *history*
@@ -56,6 +57,9 @@ powershell -ExecutionPolicy Bypass -File rvc-train-ggml\scripts\dev_build.ps1 -A
 - Toolchain overrides for `dev_build.ps1`: `RVCT_VCVARS`, `RVCT_CMAKE`, `RVCT_NINJA`.
 - Language level: C++20; MSVC `/utf-8` everywhere; `/W3` for inference targets, `/W4` for
   training targets; MSVC static runtime for `rvc-ggml`.
+- The Qt6 UI is a separate build: `cmake -S rvc-ui -B build -G Ninja -DCMAKE_BUILD_TYPE=Release`.
+  It locates the CLIs via `RVC_TOOLS_DIR` (else next to its executable) and the model tree via
+  `RVC_ROOT` (else by walking up from the executable for a `models/` directory).
 
 ### MinGW cross-check (Windows target from Linux, optional)
 
@@ -122,6 +126,8 @@ RVC-GGML.exe            # no args -> interactive wizard
 - Device IDs (ggml convention): `>=0` = Nth GPU-class device, `99` = CPU.
 - `--quant <level>` loads `hubert.<level>.gguf` / `rmvpe.<level>.gguf` / `<character>.<level>.gguf`;
   levels: `fp16/q8_0/q5_1/q4_1/q4_0`.
+- `--hubert <gguf>` / `--rmvpe <gguf>` override the feature / f0 extractor paths
+  (defaults `<model-dir>/hubert.gguf` / `<model-dir>/rmvpe.gguf`).
 - Pipeline: WAV → 16 kHz mono → 48 Hz high-pass → silent split points → HuBERT features →
   RMVPE f0 → FAISS retrieval mix (`--index-rate`) → VITS synthesis → optional resample.
 - Model-level parameters (pitch shift, retrieval rate, protect, ...) are embedded in the
@@ -136,6 +142,12 @@ rvc-sep.exe "models\roformers\<model>.gguf" input\song.wav output\vocals.wav   #
 - Roformer (Mel-Band / BS) GGUF models live in `models/roformers/`; WAV in/out, any input
   rate is auto-resampled to 44.1 kHz; multi-stem models write `<output>_stem_N.wav` (0 = vocals).
 - Built standalone (`rvc-sep-ggml/`) or as part of the training-side cascade.
+
+### UI — `rvc-ui`
+
+Qt6 Widgets app; the first tab is the Song Cover one-click flow (vocal/instrumental separation,
+optional background-singer split, RVC conversion, pitch shift, mix). See `rvc-ui/README.md`.
+Requires Qt6 Widgets; `sox` (or ffmpeg) only when pitch != 0.
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 
@@ -212,6 +224,7 @@ rvc-train.exe --interactive      # training wizard (also the no-args default)
 | Export (training GGUF, inference GGUF, index, kmeans, npy) | `rvc-train-ggml/src/export/` |
 | Wizards, JSON parsing | `rvc-train-ggml/src/cli/`, `src/common/` |
 | Roformer separation (rvc-sep) | `rvc-sep-ggml/` (model/inference/audio, adapted from BSRoformer.cpp) |
+| Song-cover UI (Qt6) | `rvc-ui/` (Song Cover page; QProcess orchestration of the CLIs) |
 
 ### Docs (all English now)
 
@@ -226,6 +239,7 @@ rvc-train.exe --interactive      # training wizard (also the no-args default)
 | `rvc-train-ggml/docs/numbers_handbook.md` | How to read training parameters/log numbers |
 | `rvc-train-ggml/docs/architecture.md` | Training architecture, data flow, GGUF/cache schema |
 | `rvc-sep-ggml/README.md` | Roformer separation tool: build, usage, attribution |
+| `rvc-ui/README.md` | Qt6 UI: build, model folders, one-click song-cover flow |
 
 Some source comments reference internal docs that were **never committed** (e.g.
 `docs/handover.md`, `docs/interfaces_and_formats.md`, `docs/dev_progress.md`,

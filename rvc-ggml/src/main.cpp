@@ -117,6 +117,8 @@ namespace {
         cout << "  --vits-selftest      VITS synthesizer self-test (requires --model to specify a character GGUF)" << endl;
         cout << "  --ref-dir <dir>      reference data directory (default output/ref)" << endl;
         cout << "  --model-dir <dir>    GGUF model directory (default models)" << endl;
+        cout << "  --hubert <gguf>      feature-extractor GGUF (default: <model-dir>/hubert.gguf)" << endl;
+        cout << "  --rmvpe <gguf>       f0-extractor GGUF (default: <model-dir>/rmvpe.gguf)" << endl;
         cout << "  --quant <level>      quant level: fp16/q8_0/q5_1/q4_1/q4_0" << endl;
         cout << "                       (loads hubert.<level>.gguf / rmvpe.<level>.gguf / <character>.<level>.gguf)" << endl;
         cout << "  --x-pad/--x-query/--x-center/--x-max  chunk parameters in seconds (default 1/6/38/41)" << endl;
@@ -931,6 +933,8 @@ int main(int argc, char* argv[]) {
     string ref_dir = "output/ref";
     string model_dir = "models";
     string model_path = "models/guanguanV1.gguf";
+    string hubert_arg;   // --hubert: explicit feature-extractor GGUF (overrides model-dir)
+    string rmvpe_arg;    // --rmvpe: explicit f0-extractor GGUF (overrides model-dir)
     string index_path;
     string noise_dir;
     string quant;
@@ -958,6 +962,12 @@ int main(int argc, char* argv[]) {
         }
         else if (a == "--model" && i + 1 < argc) {
             model_path = argv[++i];
+        }
+        else if (a == "--hubert" && i + 1 < argc) {
+            hubert_arg = argv[++i];
+        }
+        else if (a == "--rmvpe" && i + 1 < argc) {
+            rmvpe_arg = argv[++i];
         }
         else if (a == "--vits-selftest") {
             vits_selftest = true;
@@ -1097,6 +1107,13 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 Logger::info("Quant level: " + quant);
+            }
+            // Explicit extractor overrides win over the model-dir/quant defaults.
+            if (!hubert_arg.empty()) {
+                hubert_path = hubert_arg;
+            }
+            if (!rmvpe_arg.empty()) {
+                rmvpe_path = rmvpe_arg;
             }
             return run_convert(input_wav, output_wav, voice_path, model_dir,
                 index_path, device_id, convert_opt, pipeline_cfg, hubert_path, rmvpe_path);
