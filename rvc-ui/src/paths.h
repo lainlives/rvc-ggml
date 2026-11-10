@@ -21,6 +21,10 @@ inline QString exe_suffix() { return QStringLiteral(".exe"); }
 inline QString exe_suffix() { return QString(); }
 #endif
 
+inline QString tool_name(const QString& base) {
+    return base + exe_suffix();
+}
+
 // Walk up from `start` (inclusive) until a directory containing `marker` is found.
 inline QString find_up(const QString& start, const QString& marker, int max_levels = 6) {
     QDir dir(start);
@@ -67,11 +71,6 @@ inline QString tools_dir() {
     return QCoreApplication::applicationDirPath();
 }
 
-inline QString tool_name(const QString& base) {
-    return base + exe_suffix();
-}
-
-// Absolute path of a tool, or an empty string when it is not found.
 inline QString tool(const QString& base) {
     const QString p = QDir(tools_dir()).filePath(tool_name(base));
     return QFileInfo::exists(p) ? p : QString();

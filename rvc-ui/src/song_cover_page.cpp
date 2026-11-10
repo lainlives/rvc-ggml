@@ -576,7 +576,9 @@ void SongCoverPage::run_mix() {
     try {
         QApplication::setOverrideCursor(Qt::WaitCursor);
 
-        const QString instrumental_file = QFile::exists(shifted_instrumental_wav_)
+        const bool shifted_this_run =
+            plan_.contains(StepKind::ShiftInstrumental) && QFile::exists(shifted_instrumental_wav_);
+        const QString instrumental_file = shifted_this_run
             ? shifted_instrumental_wav_ : instrumental_wav_;
         audio::Buffer instrumental = audio::resample(audio::to_stereo(audio::load_audio(instrumental_file.toStdString())), 44100);
         audio::Buffer main = audio::resample(audio::to_stereo(audio::load_audio(conv_main_wav_.toStdString())), 44100);
