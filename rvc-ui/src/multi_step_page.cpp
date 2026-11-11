@@ -1,4 +1,5 @@
 // multi_step_page.cpp — multi-step generation implementation.
+
 #include "multi_step_page.h"
 
 #include "audio_utils.h"
@@ -17,6 +18,7 @@
 #include <QLineEdit>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -126,26 +128,44 @@ void StepCard::build_ui() {
     };
 
     switch (kind_) {
-        case Kind::Separate: {
-            setTitle(QStringLiteral("Separate vocals / instrumental (rvc-sep)"));
+        case Kind::Roformer: {
+            setTitle(QStringLiteral("Roformer separation / de-reverb (rvc-sep)"));
             add_input(QStringLiteral("Input"));
             model_combo_ = new QComboBox(this);
-            fill_models(model_combo_, paths::gguf_files(models + QStringLiteral("/roformers/vocal_separator")),
-                        QStringLiteral("FV4"));
-            form->addRow(QStringLiteral("Separator"), model_combo_);
-            add_output(QStringLiteral("Vocals"), owner_->base_dir() + QStringLiteral("/vocals.wav"));
-            add_output(QStringLiteral("Instrumental"), owner_->base_dir() + QStringLiteral("/instrumental.wav"));
-            break;
-        }
-        case Kind::SplitBackup: {
-            setTitle(QStringLiteral("Split background singers (rvc-sep)"));
-            add_input(QStringLiteral("Input (vocals)"));
-            model_combo_ = new QComboBox(this);
-            fill_models(model_combo_, paths::gguf_files(models + QStringLiteral("/roformers/backup_separator")),
-                        QStringLiteral("Male-Female"));
-            form->addRow(QStringLiteral("Splitter"), model_combo_);
-            add_output(QStringLiteral("Main vocals"), owner_->base_dir() + QStringLiteral("/main_vocals.wav"));
-            add_output(QStringLiteral("Background"), owner_->base_dir() + QStringLiteral("/background.wav"));
+            auto add_models = [this](const QString& tag, const QString& dir) {
+                for (const QString& f : paths::gguf_files(dir)) {
+                    model_combo_->addItem(tag + QStringLiteral(" | ") + QFileInfo(f).fileName(), f);
+                }
+            };
+            add_models(QStringLiteral("vocal"), models + QStringLiteral("/roformers/vocal_separator"));
+            add_models(QStringLiteral("background"), models + QStringLiteral("/roformers/backup_separator"));
+            add_models(QStringLiteral("de-reverb"), models + QStringLiteral("/roformers/de-reverb"));
+            for (int i = 0; i < model_combo_->count(); ++i) {
+                if (model_combo_->itemData(i).toString().contains(QStringLiteral("FV4"))) {
+                    model_combo_->setCurrentIndex(i);
+                    break;
+                }
+            }
+            form->addRow(QStringLiteral("Model"), model_combo_);
+            flip_check_ = new QCheckBox(QStringLiteral("Flip primary stem (stem 0 <-> stem 1)"), this);
+            flip_check_->setToolTip(QStringLiteral(
+                "Some separators swap the stem order. For single-stem models the primary output "
+                "and its complement (input - output) are swapped instead."));
+            form->addRow(QString(), flip_check_);
+
+            roformer_default_paths_ = roformer_defaults(model_combo_->currentData().toString());
+            add_output(QStringLiteral("Stem 0"), roformer_default_paths_.first);
+            add_output(QStringLiteral("Stem 1"), roformer_default_paths_.second);
+            output_edits_[0]->setToolTip(QStringLiteral(
+                "Base output path. Multi-stem models write <base>_stem_0.wav / <base>_stem_1.wav."));
+            output_edits_[1]->setToolTip(QStringLiteral(
+                "Second stem for single-stem models: input - output (instrumental, or the "
+                "removed reverb for de-reverb models)."));
+            for (QLineEdit* edit : output_edits_) {
+                connect(edit, &QLineEdit::textEdited, this, [this] { outputs_edited_ = true; });
+            }
+            connect(model_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                    this, &StepCard::on_model_changed);
             break;
         }
         case Kind::Convert: {
@@ -288,6 +308,38 @@ void StepCard::set_status(const QString& text) {
     status_label_->setText(text);
 }
 
+QString StepCard::model_label() const {
+    if (model_combo_ == nullptr || model_combo_->currentIndex() < 0) {
+        return QStringLiteral("roformer");
+    }
+    return model_combo_->currentText();
+}
+
+// Model-qualified default output paths, so running the card with different
+// models keeps every take and every registry entry distinct.
+QPair<QString, QString> StepCard::roformer_defaults(const QString& model) const {
+    QString tag = QFileInfo(model).completeBaseName();
+    tag.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]+")), QStringLiteral("_"));
+    if (tag.isEmpty()) {
+        tag = QStringLiteral("model");
+    }
+    const QString base = owner_->base_dir() + QStringLiteral("/roformer_") + tag;
+    return {base + QStringLiteral(".wav"), base + QStringLiteral("_complement.wav")};
+}
+
+void StepCard::on_model_changed() {
+    if (output_edits_.size() < 2) {
+        return;
+    }
+    const QPair<QString, QString> next = roformer_defaults(model_combo_->currentData().toString());
+    if (!outputs_edited_) {
+        output_edits_[0]->setText(next.first);
+        output_edits_[1]->setText(next.second);
+    }
+    roformer_default_paths_ = next;
+    resolved_.clear();
+}
+
 QString StepCard::input_path(int index) const {
     if (index < 0 || index >= inputs_.size()) {
         return {};
@@ -301,6 +353,10 @@ QString StepCard::input_path(int index) const {
 }
 
 QString StepCard::output_path(int index) const {
+    if (kind_ == Kind::Roformer && index >= 0 && index < resolved_.size() &&
+        !resolved_.at(index).isEmpty() && QFile::exists(resolved_.at(index))) {
+        return resolved_.at(index);
+    }
     return index >= 0 && index < output_edits_.size() ? output_edits_.at(index)->text() : QString();
 }
 
@@ -367,6 +423,20 @@ void StepCard::run() {
         return;
     }
 
+    if (kind_ == Kind::Roformer) {
+        // A previous run (possibly with another model) may have left
+        // <base>_stem_N.wav / the complement behind; stale files would be
+        // mistaken for this run's outputs.
+        if (output_edits_.size() >= 2) {
+            const QString base = output_edits_.at(0)->text();
+            QFile::remove(base);
+            QFile::remove(stem_path(base, 0));
+            QFile::remove(stem_path(base, 1));
+            QFile::remove(output_edits_.at(1)->text());
+        }
+        resolved_.clear();
+    }
+
     running_ = true;
     run_button_->setEnabled(false);
     set_status(QStringLiteral("Running..."));
@@ -425,8 +495,7 @@ bool StepCard::build_invocation(QString* program, QStringList* args, QString* er
     const QString tool_rvc = paths::tool(QStringLiteral("RVC-GGML"));
 
     switch (kind_) {
-        case Kind::Separate:
-        case Kind::SplitBackup: {
+        case Kind::Roformer: {
             if (tool_sep.isEmpty()) {
                 *error = QStringLiteral("rvc-sep not found (set RVC_TOOLS_DIR)");
                 return false;
@@ -513,41 +582,43 @@ bool StepCard::build_invocation(QString* program, QStringList* args, QString* er
 
 void StepCard::handle_success() {
     switch (kind_) {
-        case Kind::Separate: {
+        case Kind::Roformer: {
             const QString out = output_path(0);
             const QString stem0 = stem_path(out, 0);
             const QString stem1 = stem_path(out, 1);
+            QString primary;
+            QString secondary;
             if (QFile::exists(stem0) && QFile::exists(stem1)) {
-                // Two-stem model: use the model's own instrumental.
-                output_edits_[0]->setText(stem0);
-                output_edits_[1]->setText(stem1);
-                return;
+                // Two-stem model: use the model's own pair.
+                primary = stem0;
+                secondary = stem1;
+            } else {
+                // Single-stem model: the model's output is the primary stem; the
+                // complement (input - output) is the other. For a vocal separator
+                // that is vocals/instrumental, for a de-reverb model dry/reverb.
+                const QString single = QFile::exists(out) ? out : (QFile::exists(stem0) ? stem0 : QString());
+                if (single.isEmpty()) {
+                    throw std::runtime_error("rvc-sep produced no output");
+                }
+                primary = single;
+                secondary = output_path(1);
+                if (secondary.isEmpty() || secondary == primary) {
+                    throw std::runtime_error("pick a different path for the second stem");
+                }
+                const QString input = input_path(0);
+                if (input.isEmpty()) {
+                    throw std::runtime_error("input audio went missing");
+                }
+                audio::Buffer in = audio::resample(
+                    audio::to_stereo(audio::load_audio(input.toStdString())), 44100);
+                audio::Buffer p = audio::resample(
+                    audio::to_stereo(audio::load_audio(primary.toStdString())), 44100);
+                audio::save_wav(secondary.toStdString(), audio::subtract(in, p));
             }
-            if (!QFile::exists(out)) {
-                throw std::runtime_error("rvc-sep produced no output");
+            if (flip_check_ != nullptr && flip_check_->isChecked()) {
+                std::swap(primary, secondary);
             }
-            // Vocals-only model: instrumental = input - vocals.
-            const QString input = input_path(0);
-            if (input.isEmpty()) {
-                throw std::runtime_error("input audio went missing");
-            }
-            audio::Buffer song = audio::resample(
-                audio::to_stereo(audio::load_audio(input.toStdString())), 44100);
-            audio::Buffer vocals = audio::resample(
-                audio::to_stereo(audio::load_audio(out.toStdString())), 44100);
-            audio::Buffer instrumental = audio::subtract(song, vocals);
-            audio::save_wav(output_path(1).toStdString(), instrumental);
-            return;
-        }
-        case Kind::SplitBackup: {
-            const QString out = output_path(0);
-            const QString stem0 = stem_path(out, 0);
-            const QString stem1 = stem_path(out, 1);
-            if (!QFile::exists(stem0) || !QFile::exists(stem1)) {
-                throw std::runtime_error("splitter returned a single stem; use a 2-stem model");
-            }
-            output_edits_[0]->setText(stem0);
-            output_edits_[1]->setText(stem1);
+            resolved_ = {primary, secondary};
             return;
         }
         default:
@@ -560,14 +631,12 @@ void StepCard::handle_success() {
 
 void StepCard::register_outputs() {
     switch (kind_) {
-        case Kind::Separate:
-            owner_->sources().add(QStringLiteral("Separation: vocals"), output_path(0));
-            owner_->sources().add(QStringLiteral("Separation: instrumental"), output_path(1));
+        case Kind::Roformer: {
+            const QString label = QStringLiteral("Roformer (%1)").arg(model_label());
+            owner_->sources().add(label + QStringLiteral(": stem 0"), output_path(0));
+            owner_->sources().add(label + QStringLiteral(": stem 1"), output_path(1));
             break;
-        case Kind::SplitBackup:
-            owner_->sources().add(QStringLiteral("Split: main vocals"), output_path(0));
-            owner_->sources().add(QStringLiteral("Split: background"), output_path(1));
-            break;
+        }
         case Kind::Convert:
             owner_->sources().add(QStringLiteral("Convert: output"), output_path(0));
             break;
@@ -612,8 +681,7 @@ MultiStepPage::MultiStepPage(QWidget* parent) : QWidget(parent) {
     auto* content = new QWidget(scroll);
     auto* content_layout = new QVBoxLayout(content);
 
-    content_layout->addWidget(new StepCard(StepCard::Kind::Separate, this));
-    content_layout->addWidget(new StepCard(StepCard::Kind::SplitBackup, this));
+    content_layout->addWidget(new StepCard(StepCard::Kind::Roformer, this));
     content_layout->addWidget(new StepCard(StepCard::Kind::Convert, this));
     content_layout->addWidget(new StepCard(StepCard::Kind::PitchShift, this));
     content_layout->addWidget(new StepCard(StepCard::Kind::Mix, this));

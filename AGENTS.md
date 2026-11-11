@@ -163,7 +163,12 @@ placeholder for a future waveform widget — keep waveform drawing cheap (precom
 peaks once, never scan the full buffer per repaint).
 The "Multi-step" tab runs each step in isolation with a shared source registry:
 inputs can be files or any step's output; outputs can be saved anywhere.
+Its Roformer card aggregates vocal separators, background splitters and de-reverb
+models in one dropdown (single-stem models also emit `input - output`).
 Auto pitch (`--proposed-pitch`) affects only the converted voice.
+The Song Cover flow can optionally de-reverb the main vocals after separation
+(`models/roformers/de-reverb/`), and both separations have a "Flip stems" option
+for models that swap the stem order.
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 

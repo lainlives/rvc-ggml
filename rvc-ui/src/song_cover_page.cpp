@@ -3,9 +3,10 @@
 // Pipeline (each external step runs rvc-sep / RVC-GGML / sox as a subprocess):
 //   1. rvc-sep <vocal-separator>  song.wav    -> vocals (+ instrumental)
 //   2. optional: rvc-sep <backup-separator>   vocals -> main + background stems
-//   3. RVC-GGML conversion of the main vocals (and optionally the background)
-//   4. optional: sox/ffmpeg pitch-shift of the instrumental (same amount)
-//   5. in-process mix (background + main + instrumental gains) -> output WAV
+//   3. optional: rvc-sep <de-reverb model>    main vocals -> dry vocals
+//   4. RVC-GGML conversion of the main vocals (and optionally the background)
+//   5. optional: sox/ffmpeg pitch-shift of the instrumental (same amount)
+//   6. in-process mix (background + main + instrumental gains) -> output WAV
 
 #include "song_cover_page.h"
 
@@ -122,8 +123,18 @@ void SongCoverPage::build_ui() {
     auto* models_group = new QGroupBox(QStringLiteral("Models"), this);
     auto* models_form = new QFormLayout(models_group);
 
-    vocal_sep_combo_ = new QComboBox(models_group);
-    models_form->addRow(QStringLiteral("Vocal separator"), vocal_sep_combo_);
+    {
+        auto* row = new QWidget(models_group);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        vocal_sep_combo_ = new QComboBox(row);
+        flip_stems_check_ = new QCheckBox(QStringLiteral("Flip stems"), row);
+        flip_stems_check_->setToolTip(QStringLiteral(
+            "Some separators swap the stem order (stem 0 = instrumental, stem 1 = vocals)."));
+        h->addWidget(vocal_sep_combo_, 1);
+        h->addWidget(flip_stems_check_);
+        models_form->addRow(QStringLiteral("Vocal separator"), row);
+    }
 
     {
         auto* row = new QWidget(models_group);
@@ -132,10 +143,34 @@ void SongCoverPage::build_ui() {
         split_backup_check_ = new QCheckBox(QStringLiteral("Separate background singers"), row);
         backup_sep_combo_ = new QComboBox(row);
         backup_sep_combo_->setEnabled(false);
+        flip_backup_check_ = new QCheckBox(QStringLiteral("Flip stems"), row);
+        flip_backup_check_->setEnabled(false);
+        flip_backup_check_->setToolTip(QStringLiteral(
+            "Some splitters swap the stem order (stem 0 = background, stem 1 = main vocals)."));
         connect(split_backup_check_, &QCheckBox::toggled, backup_sep_combo_, &QComboBox::setEnabled);
+        connect(split_backup_check_, &QCheckBox::toggled, flip_backup_check_, &QCheckBox::setEnabled);
         h->addWidget(split_backup_check_);
         h->addWidget(backup_sep_combo_, 1);
+        h->addWidget(flip_backup_check_);
         models_form->addRow(QStringLiteral("Background"), row);
+    }
+
+    {
+        auto* row = new QWidget(models_group);
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        dereverb_check_ = new QCheckBox(QStringLiteral("De-reverb vocals"), row);
+        dereverb_check_->setToolTip(QStringLiteral(
+            "Optional roformer de-reverb step on the main vocals, after separation and "
+            "before the RVC conversion."));
+        dereverb_combo_ = new QComboBox(row);
+        dereverb_combo_->setEnabled(false);
+        connect(dereverb_check_, &QCheckBox::toggled, this, [this](bool on) {
+            dereverb_combo_->setEnabled(on && dereverb_combo_->count() > 0);
+        });
+        h->addWidget(dereverb_check_);
+        h->addWidget(dereverb_combo_, 1);
+        models_form->addRow(QStringLiteral("De-reverb"), row);
     }
 
     extractor_combo_ = new QComboBox(models_group);
@@ -352,6 +387,8 @@ void SongCoverPage::populate_models() {
 
     fill(vocal_sep_combo_, paths::gguf_files(models + QStringLiteral("/roformers/vocal_separator")), QStringLiteral("FV4"));
     fill(backup_sep_combo_, paths::gguf_files(models + QStringLiteral("/roformers/backup_separator")), QStringLiteral("Male-Female"));
+    fill(dereverb_combo_, paths::gguf_files(models + QStringLiteral("/roformers/de-reverb")), QStringLiteral("De-Reverb"));
+    dereverb_combo_->setEnabled(dereverb_check_->isChecked() && dereverb_combo_->count() > 0);
     fill(extractor_combo_, paths::gguf_files(models + QStringLiteral("/extractors")), QStringLiteral("contentvec"));
     fill(f0_combo_, paths::gguf_files(models + QStringLiteral("/f0")), QStringLiteral("rmvpe.gguf"));
     fill(voice_combo_, paths::voice_models(), QString());
@@ -478,6 +515,22 @@ void SongCoverPage::start_run() {
                            "Set the RVC_TOOLS_DIR environment variable to the directory that contains them."));
         return;
     }
+    if (vocal_sep_combo_->currentData().toString().isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Song cover"),
+            QStringLiteral("No vocal separator model was found in models/roformers/vocal_separator."));
+        return;
+    }
+    if (split_backup_check_->isChecked() && backup_sep_combo_->currentData().toString().isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Song cover"),
+            QStringLiteral("Background split is enabled but no model was found in "
+                           "models/roformers/backup_separator."));
+        return;
+    }
+    if (dereverb_check_->isChecked() && dereverb_combo_->currentData().toString().isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Song cover"),
+            QStringLiteral("De-reverb is enabled but no model was found in models/roformers/de-reverb."));
+        return;
+    }
     if (!QDir().mkpath(QFileInfo(output).absolutePath())) {
         QMessageBox::warning(this, QStringLiteral("Song cover"), QStringLiteral("Cannot create the output directory."));
         return;
@@ -488,7 +541,10 @@ void SongCoverPage::start_run() {
     QDir().mkpath(work_dir_);
 
     vocals_wav_ = work_dir_ + QStringLiteral("/vocals.wav");
+    main_vocals_wav_ = vocals_wav_;
+    background_wav_ = work_dir_ + QStringLiteral("/background_stem_1.wav");
     instrumental_wav_ = work_dir_ + QStringLiteral("/instrumental.wav");
+    dereverb_wav_ = work_dir_ + QStringLiteral("/vocals_dereverbed.wav");
     conv_main_wav_ = work_dir_ + QStringLiteral("/vocals_converted.wav");
     conv_backup_wav_ = work_dir_ + QStringLiteral("/background_converted.wav");
     shifted_instrumental_wav_ = work_dir_ + QStringLiteral("/instrumental_shifted.wav");
@@ -500,6 +556,10 @@ void SongCoverPage::start_run() {
     if (split_backup_check_->isChecked()) {
         plan_ << StepKind::SplitBackup;
         steps_list_->addItem(QStringLiteral("\u00b7 Split background singers"));
+    }
+    if (dereverb_check_->isChecked()) {
+        plan_ << StepKind::DeReverb;
+        steps_list_->addItem(QStringLiteral("\u00b7 De-reverb main vocals"));
     }
     plan_ << StepKind::ConvertMain;
     steps_list_->addItem(QStringLiteral("\u00b7 Convert vocals (RVC)"));
@@ -527,7 +587,16 @@ void SongCoverPage::start_run() {
 
     log(QStringLiteral("=== Song cover: %1 ===").arg(QFileInfo(song).fileName()));
     if (split_backup_check_->isChecked()) {
-        log(QStringLiteral("Background split is enabled: main vocals = stem 0, background = stem 1."));
+        const bool flip = flip_backup_check_->isChecked();
+        log(QStringLiteral("Background split is enabled: main vocals = stem %1, background = stem %2.")
+                .arg(flip ? 1 : 0).arg(flip ? 0 : 1));
+    }
+    if (flip_stems_check_->isChecked()) {
+        log(QStringLiteral("Vocal stems are flipped: stem 1 = vocals, stem 0 = instrumental."));
+    }
+    if (dereverb_check_->isChecked()) {
+        log(QStringLiteral("De-reverb: %1 -> main vocals before conversion.")
+                .arg(display_name(dereverb_combo_->currentData().toString())));
     }
     run_step(0);
 }
@@ -542,19 +611,38 @@ void SongCoverPage::run_step(int index) {
 
     switch (kind) {
         case StepKind::Separate:
+            // Clear outputs from a previous run: a stale _stem_1.wav would make a
+            // single-stem run look like a two-stem run.
+            QFile::remove(vocals_wav_);
+            QFile::remove(work_dir_ + QStringLiteral("/vocals_stem_0.wav"));
+            QFile::remove(work_dir_ + QStringLiteral("/vocals_stem_1.wav"));
+            QFile::remove(work_dir_ + QStringLiteral("/vocals_flipped.wav"));
             start_process(tool_sep_, {vocal_sep_combo_->currentData().toString(),
                                       song_edit_->text(), vocals_wav_});
             break;
         case StepKind::SplitBackup:
+            QFile::remove(work_dir_ + QStringLiteral("/background.wav"));
+            QFile::remove(work_dir_ + QStringLiteral("/background_stem_0.wav"));
+            QFile::remove(work_dir_ + QStringLiteral("/background_stem_1.wav"));
             start_process(tool_sep_, {backup_sep_combo_->currentData().toString(),
                                       vocals_wav_, work_dir_ + QStringLiteral("/background.wav")});
             break;
+        case StepKind::DeReverb: {
+            // The single-stem de-reverb model returns the dry (dereverbed) signal.
+            // Clear stale outputs first so a failed run cannot reuse a previous take.
+            QFile::remove(dereverb_wav_);
+            QFile::remove(dereverb_wav_.left(dereverb_wav_.lastIndexOf(QLatin1Char('.'))) +
+                          QStringLiteral("_stem_0.wav"));
+            start_process(tool_sep_, {dereverb_combo_->currentData().toString(),
+                                      main_vocals_wav_, dereverb_wav_});
+            break;
+        }
         case StepKind::ConvertMain:
-            start_process(tool_rvc_, rvc_args(vocals_wav_, conv_main_wav_, true));
+            start_process(tool_rvc_, rvc_args(
+                dereverb_check_->isChecked() ? dereverb_wav_ : main_vocals_wav_, conv_main_wav_, true));
             break;
         case StepKind::ConvertBackup:
-            start_process(tool_rvc_, rvc_args(work_dir_ + QStringLiteral("/background_stem_1.wav"),
-                                              conv_backup_wav_, false));
+            start_process(tool_rvc_, rvc_args(background_wav_, conv_backup_wav_, false));
             break;
         case StepKind::ShiftInstrumental: {
             // Only the manual semitone shift moves the instrumental; "auto pitch"
@@ -631,6 +719,12 @@ void SongCoverPage::complete_step() {
     if (kind == StepKind::Separate && !prepare_instrumental()) {
         return;
     }
+    if (kind == StepKind::SplitBackup && !prepare_split()) {
+        return;
+    }
+    if (kind == StepKind::DeReverb && !resolve_dereverb_output()) {
+        return;
+    }
 
     if (step_index_ + 1 >= plan_.size()) {
         finish_run(true);
@@ -643,32 +737,78 @@ bool SongCoverPage::prepare_instrumental() {
     const QString stem0 = work_dir_ + QStringLiteral("/vocals_stem_0.wav");
     const QString stem1 = work_dir_ + QStringLiteral("/vocals_stem_1.wav");
     const QString plain = vocals_wav_;
+    const bool flip = flip_stems_check_->isChecked();
 
     try {
         QApplication::setOverrideCursor(Qt::WaitCursor);
         if (QFile::exists(stem0) && QFile::exists(stem1)) {
-            // Two-stem model (e.g. InstVoc): stem 0 = vocals, stem 1 = instrumental.
-            vocals_wav_ = stem0;
-            instrumental_wav_ = stem1;
-            log(QStringLiteral("Separator returned two stems: using the model's instrumental."));
+            // Two-stem model: stem 0 = vocals, stem 1 = instrumental by convention;
+            // some models swap them, which the "Flip stems" checkbox corrects.
+            vocals_wav_ = flip ? stem1 : stem0;
+            instrumental_wav_ = flip ? stem0 : stem1;
+            log(QStringLiteral("Separator returned two stems: vocals = stem %1, instrumental = stem %2%3.")
+                    .arg(flip ? 1 : 0).arg(flip ? 0 : 1)
+                    .arg(flip ? QStringLiteral(" (flipped)") : QString()));
         } else if (QFile::exists(plain)) {
             // Vocals-only model (e.g. FV4): instrumental = song - vocals.
             log(QStringLiteral("Computing instrumental (song - vocals)..."));
             audio::Buffer song = audio::resample(audio::to_stereo(audio::load_audio(song_edit_->text().toStdString())), 44100);
             audio::Buffer voc = audio::resample(audio::to_stereo(audio::load_audio(plain.toStdString())), 44100);
             audio::Buffer inst = audio::subtract(song, voc);
-            audio::save_wav(instrumental_wav_.toStdString(), inst);
+            if (flip) {
+                // Flipped single-stem model: treat the residual as the vocals.
+                const QString flipped = work_dir_ + QStringLiteral("/vocals_flipped.wav");
+                audio::save_wav(flipped.toStdString(), inst);
+                vocals_wav_ = flipped;
+                instrumental_wav_ = plain;
+                log(QStringLiteral("Separator returned one stem; flipped: residual = vocals."));
+            } else {
+                audio::save_wav(instrumental_wav_.toStdString(), inst);
+            }
         } else {
             QApplication::restoreOverrideCursor();
             fail(QStringLiteral("Separation produced no output file."));
             return false;
         }
+        main_vocals_wav_ = vocals_wav_;
         QApplication::restoreOverrideCursor();
     } catch (const std::exception& e) {
         QApplication::restoreOverrideCursor();
         fail(QString::fromStdString(e.what()));
         return false;
     }
+    return true;
+}
+
+bool SongCoverPage::prepare_split() {
+    const QString stem0 = work_dir_ + QStringLiteral("/background_stem_0.wav");
+    const QString stem1 = work_dir_ + QStringLiteral("/background_stem_1.wav");
+    if (!QFile::exists(stem0) || !QFile::exists(stem1)) {
+        fail(QStringLiteral("The background splitter returned a single stem; pick a 2-stem "
+                            "(main vocals / background) model."));
+        return false;
+    }
+    const bool flip = flip_backup_check_->isChecked();
+    main_vocals_wav_ = flip ? stem1 : stem0;
+    background_wav_ = flip ? stem0 : stem1;
+    log(QStringLiteral("Background split: main vocals = stem %1, background = stem %2%3.")
+            .arg(flip ? 1 : 0).arg(flip ? 0 : 1)
+            .arg(flip ? QStringLiteral(" (flipped)") : QString()));
+    return true;
+}
+
+bool SongCoverPage::resolve_dereverb_output() {
+    const QString stem0 = dereverb_wav_.left(dereverb_wav_.lastIndexOf(QLatin1Char('.'))) +
+                          QStringLiteral("_stem_0.wav");
+    if (!QFile::exists(dereverb_wav_)) {
+        if (QFile::exists(stem0)) {
+            dereverb_wav_ = stem0;
+        } else {
+            fail(QStringLiteral("De-reverb produced no output file."));
+            return false;
+        }
+    }
+    log(QStringLiteral("De-reverb: dry vocals = %1").arg(QFileInfo(dereverb_wav_).fileName()));
     return true;
 }
 

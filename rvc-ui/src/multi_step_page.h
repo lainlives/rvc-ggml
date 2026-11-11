@@ -38,11 +38,15 @@ private:
 
 class MultiStepPage;
 
-// One runnable step: separate / split background / convert / pitch-shift / mix.
+// One runnable step: roformer separation / de-reverb / convert / pitch-shift / mix.
+//
+// The roformer card aggregates every roformer model (vocal separators, backup
+// splitters and de-reverb models) in one model dropdown: single-stem models also
+// emit the complement (input - output), and "Flip primary stem" swaps the pair.
 class StepCard : public QGroupBox {
     Q_OBJECT
 public:
-    enum class Kind { Separate, SplitBackup, Convert, PitchShift, Mix };
+    enum class Kind { Roformer, Convert, PitchShift, Mix };
 
     StepCard(Kind kind, MultiStepPage* owner);
 
@@ -50,6 +54,7 @@ private slots:
     void run();
     void on_input_activated(int index);
     void on_run_finished(int exit_code, int exit_status);
+    void on_model_changed();
     void save_output(int index);
 
 private:
@@ -61,6 +66,8 @@ private:
     void register_outputs();
     QString input_path(int index) const;
     QString output_path(int index) const;
+    QString model_label() const;
+    QPair<QString, QString> roformer_defaults(const QString& model) const;
 
     Kind kind_;
     MultiStepPage* owner_;
@@ -74,6 +81,7 @@ private:
 
     // Per-kind widgets.
     QComboBox* model_combo_ = nullptr;
+    QCheckBox* flip_check_ = nullptr;
     QComboBox* voice_combo_ = nullptr;
     QComboBox* extractor_combo_ = nullptr;
     QComboBox* f0_combo_ = nullptr;
@@ -86,6 +94,13 @@ private:
     QDoubleSpinBox* threshold_spin_ = nullptr;
     QSpinBox* sid_spin_ = nullptr;
     QVector<QDoubleSpinBox*> gain_spins_;
+
+    // Roformer card: keep model-qualified default paths in sync until the user
+    // edits them (then the user's choice wins). `resolved_` holds the files the
+    // last run actually wrote (the edits stay the base/complement paths).
+    QPair<QString, QString> roformer_default_paths_;
+    QStringList resolved_;
+    bool outputs_edited_ = false;
 };
 
 class MultiStepPage : public QWidget {

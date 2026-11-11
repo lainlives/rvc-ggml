@@ -25,7 +25,8 @@ class QToolButton;
 
 // One-click song cover:
 //   song -> [separate vocals/instrumental] -> [optional: split background vocals]
-//        -> [convert vocals with RVC] -> [optional: convert background]
+//        -> [optional: de-reverb main vocals] -> [convert vocals with RVC]
+//        -> [optional: convert background]
 //        -> [optional: pitch-shift instrumental] -> mix -> output (WAV/FLAC/MP3/OGG).
 class SongCoverPage : public QWidget {
     Q_OBJECT
@@ -48,7 +49,7 @@ private slots:
     void on_player_state();
 
 private:
-    enum class StepKind { Separate, SplitBackup, ConvertMain, ConvertBackup, ShiftInstrumental, Mix };
+    enum class StepKind { Separate, SplitBackup, DeReverb, ConvertMain, ConvertBackup, ShiftInstrumental, Mix };
 
     void build_ui();
     void populate_models();
@@ -63,6 +64,8 @@ private:
     void run_step(int index);
     void run_mix();
     bool prepare_instrumental();
+    bool prepare_split();
+    bool resolve_dereverb_output();
     void load_output_for_playback(const QString& path);
     bool encode_to(const QString& wav_path, const QString& target_path, QString* err);
     int total_pitch() const;
@@ -74,8 +77,12 @@ private:
     QLineEdit* output_edit_ = nullptr;
     QComboBox* voice_combo_ = nullptr;
     QComboBox* vocal_sep_combo_ = nullptr;
+    QCheckBox* flip_stems_check_ = nullptr;
     QCheckBox* split_backup_check_ = nullptr;
     QComboBox* backup_sep_combo_ = nullptr;
+    QCheckBox* flip_backup_check_ = nullptr;
+    QCheckBox* dereverb_check_ = nullptr;
+    QComboBox* dereverb_combo_ = nullptr;
     QComboBox* extractor_combo_ = nullptr;
     QComboBox* f0_combo_ = nullptr;
     QSpinBox* octaves_spin_ = nullptr;
@@ -124,7 +131,10 @@ private:
     QString tool_sox_;
     QString tool_ffmpeg_;
     QString vocals_wav_;
+    QString main_vocals_wav_;
+    QString background_wav_;
     QString instrumental_wav_;
+    QString dereverb_wav_;
     QString conv_main_wav_;
     QString conv_backup_wav_;
     QString shifted_instrumental_wav_;

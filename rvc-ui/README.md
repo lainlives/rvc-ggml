@@ -8,10 +8,19 @@ The first tab is the **Song Cover** one-click flow:
 song.wav
   -> rvc-sep <vocal separator>                        (models/roformers/vocal_separator)
   -> [optional] rvc-sep <background separator>        (models/roformers/backup_separator)
+  -> [optional] rvc-sep <de-reverb model>             (models/roformers/de-reverb)
   -> RVC-GGML conversion of the vocals (and background) with the target voice
   -> [optional] pitch-shift the instrumental (sox, or ffmpeg as fallback)
   -> mix (main / instrumental / background gains) -> output WAV
 ```
+
+- **Flip stems** corrects separators that swap the stem order (stem 0 =
+  instrumental, stem 1 = vocals). With a single-stem model the checkbox swaps
+  the model output with its complement (`input - output`).
+- **De-reverb vocals** runs a roformer de-reverb model on the main vocals after
+  separation (and the optional background split) and before the RVC conversion.
+  Single-stem de-reverb models return the dry signal; it is used directly.
+- **Background split** needs a 2-stem (main vocals / background) model.
 
 Model folders are discovered from the repository `models/` tree:
 
@@ -20,19 +29,25 @@ Model folders are discovered from the repository `models/` tree:
 | `models/voice_models/<name>/<name>.gguf` (+ `.index.gguf`) | target voice (RVC character model) |
 | `models/roformers/vocal_separator/*.gguf` | separating vocals from the song |
 | `models/roformers/backup_separator/*.gguf` | optional background-singer split (Male-Female) |
+| `models/roformers/de-reverb/*.gguf` | optional de-reverb of the main vocals |
 | `models/extractors/*.gguf` | RVC feature extractor (default: contentvec) |
 | `models/f0/*.gguf` | RVC f0 extractor (default: rmvpe) |
 
 ## Multi-step tab
 
-Every generation step can be run in isolation: separate (vocals / instrumental),
-split background singers, convert (RVC), pitch-shift, and mix (up to three
-tracks with gains).
+Every generation step can be run in isolation: roformer separation / de-reverb,
+convert (RVC), pitch-shift, and mix (up to three tracks with gains).
 
+- The **Roformer** card aggregates every roformer model (vocal separators,
+  background splitters and de-reverb models) in one model dropdown. Single-stem
+  models also emit the complement (`input - output`) as the second stem; with
+  the de-reverb models that is the removed reverb. **Flip primary stem** swaps
+  the pair.
 - Inputs: any step's input can be a file via `<browse file...>` or **any other
   step's output** (the shared source list) — arbitrary piping between steps.
 - Outputs: every step writes to an editable path and offers **Save as...** to
-  copy a result anywhere.
+  copy a result anywhere. Roformer outputs are registered per model, so runs
+  with different models stay distinct.
 - Intermediate files default to `<repo>/work/multistep/`.
 
 ## Build
