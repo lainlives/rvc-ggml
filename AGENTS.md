@@ -169,6 +169,9 @@ Auto pitch (`--proposed-pitch`) affects only the converted voice.
 The Song Cover flow can optionally de-reverb the main vocals after separation
 (`models/roformers/de-reverb/`), and both separations have a "Flip stems" option
 for models that swap the stem order.
+The "Training" tab runs `rvc-prep` -> `rvc-train` -> `--export-gguf` as separate
+processes. `--export-gguf` accepts the training-state snapshots written by
+"export every" (`train.epN.snapshot.gguf`), not the resume checkpoints.
 
 ### Training — `rvc-prep.exe` + `rvc-train.exe` (two processes by design)
 
@@ -245,7 +248,7 @@ rvc-train.exe --interactive      # training wizard (also the no-args default)
 | Export (training GGUF, inference GGUF, index, kmeans, npy) | `rvc-train-ggml/src/export/` |
 | Wizards, JSON parsing | `rvc-train-ggml/src/cli/`, `src/common/` |
 | Roformer separation (rvc-sep) | `rvc-sep-ggml/` (model/inference/audio, adapted from BSRoformer.cpp) |
-| Song-cover UI (Qt6) | `rvc-ui/` (Song Cover page; QProcess orchestration of the CLIs) |
+| Song-cover UI (Qt6) | `rvc-ui/` (Song Cover, Multi-step and Training pages; QProcess orchestration of the CLIs) |
 
 ### Docs (all English now)
 

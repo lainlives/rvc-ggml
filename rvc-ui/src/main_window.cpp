@@ -3,6 +3,7 @@
 
 #include "multi_step_page.h"
 #include "song_cover_page.h"
+#include "training_page.h"
 
 #include <QTabWidget>
 
@@ -12,6 +13,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* tabs = new QTabWidget(this);
     tabs->addTab(new SongCoverPage(tabs), QStringLiteral("Song Cover"));
     tabs->addTab(new MultiStepPage(tabs), QStringLiteral("Multi-step"));
-    // The "Training" tab is planned; the tab widget keeps it easy to add.
+    tabs->addTab(new TrainingPage(tabs), QStringLiteral("Training"));
     setCentralWidget(tabs);
 }

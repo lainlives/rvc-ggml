@@ -50,6 +50,29 @@ convert (RVC), pitch-shift, and mix (up to three tracks with gains).
   with different models stay distinct.
 - Intermediate files default to `<repo>/work/multistep/`.
 
+## Training tab
+
+Three cards, each step a separate process (project rule R28: the ggml and
+traincpp Vulkan backends must never coexist in one process):
+
+1. **Preprocess** (`rvc-prep`): audio folder -> training cache. Version v1
+   (40 kHz) or v2 (48 kHz), feature extractor, F0 extractor, ggml device
+   (GPU 0 / CPU 99). Only `.wav` files are read.
+2. **Train** (`rvc-train --train`): fine-tune from pretrained G/D training-state
+   GGUFs or from scratch (`--scratch`). Epochs, batch, bucket, disc length,
+   save/export intervals, gradient accumulation. Defaults are conservative for
+   ~4 GB VRAM (batch 1, bucket 384, disc len 12800, export every 5 epochs); the
+   measured stable profile is bucket <= 300 and disc_len <= 4800.
+3. **Export** (`rvc-train --export-gguf`): training-state snapshot ->
+   inference GGUF. Snapshots (`train.epN.snapshot.gguf`) are written by
+   "export every"; the resume checkpoints (`train*.ckpt.gguf`) carry optimizer
+   state and cannot be exported. `export.epN.gguf` files written during
+   training are already inference GGUFs.
+
+The cache dir (`--exp`) and output dir (`--out`) are shared by all three cards.
+Training uses traincpp device indices (see `rvc-train --list-devices`), not the
+ggml convention.
+
 ## Build
 
 Requires Qt 6 (Widgets), CMake, and the `third_party/miniaudio` submodule
