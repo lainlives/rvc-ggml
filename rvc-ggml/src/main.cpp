@@ -222,10 +222,12 @@ namespace {
         ggml_tensor* out_l12 = nullptr;
         rvc::hubert::build_graph(runner.ctx(), model, cfg, input, &out_proj, &out_l9, &out_l12);
 
-        ggml_set_output(out_proj);
+        if (out_proj != nullptr) {
+            ggml_set_output(out_proj);
+            runner.expand(out_proj);
+        }
         ggml_set_output(out_l9);
         ggml_set_output(out_l12);
-        runner.expand(out_proj);
         runner.expand(out_l9);
         runner.expand(out_l12);
 
@@ -265,7 +267,9 @@ namespace {
         };
         dump(out_l9, "cpp_hubert_v1_layer9.raw");
         dump(out_l12, "cpp_hubert_v2_layer12.raw");
-        dump(out_proj, "cpp_hubert_v1_finalproj.raw");
+        if (out_proj != nullptr) {
+            dump(out_proj, "cpp_hubert_v1_finalproj.raw");
+        }
 
         if (dump_debug) {
             for (const auto& d : rvc::hubert::debug_tensors()) {

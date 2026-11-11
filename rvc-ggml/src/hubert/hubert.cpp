@@ -299,9 +299,15 @@ void build_graph(ggml_context* ctx,
     if (layer9) *out_layer9 = layer9;        // [768, T]
     if (layer12) *out_layer12 = layer12;     // [768, T]
 
-    // final_proj: linear expects x as [K=hidden, T]; layer9 already has that layout
-    *out_proj = linear(ctx, layer9,
-        require(model, "final_proj.weight"), require(model, "final_proj.bias"));  // [256, T]
+    // final_proj: linear expects x as [K=hidden, T]; layer9 already has that layout.
+    // Some feature extractors (e.g. WavLM loaded as a plain HuBERT model, matching the
+    // RVC ecosystem) have no final_proj; v2 inference does not need it.
+    if (layer9 != nullptr && model.has_weight("final_proj.weight")) {
+        *out_proj = linear(ctx, layer9,
+            require(model, "final_proj.weight"), require(model, "final_proj.bias"));  // [256, T]
+    } else {
+        *out_proj = nullptr;
+    }
 }
 
 // ------------------------------------------------------------
@@ -337,6 +343,9 @@ void HubertEncoder::build(int64_t samples) {
     build_graph(ctx, impl_->model, cfg_, impl_->in,
         &impl_->out_proj, &impl_->out_l9, &impl_->out_l12);
     for (ggml_tensor* t : { impl_->out_proj, impl_->out_l9, impl_->out_l12 }) {
+        if (t == nullptr) {
+            continue;
+        }
         ggml_set_output(t);
         impl_->runner->expand(t);
     }
@@ -357,6 +366,10 @@ Features HubertEncoder::extract(const std::vector<float>& audio_16k, bool v2) {
     impl_->runner->set_input_vec(impl_->in, audio_16k);
     impl_->runner->compute();
 
+    if (!v2 && impl_->out_proj == nullptr) {
+        throw std::runtime_error(
+            "this feature extractor has no final_proj; v1 models need HuBERT/ContentVec");
+    }
     ggml_tensor* t = v2 ? impl_->out_l12 : impl_->out_proj;
     Features f;
     f.dim = t->ne[0];

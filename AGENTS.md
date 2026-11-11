@@ -114,8 +114,10 @@ Port notes:
 
 Model files (converted from the original RVC assets with `rvc-ggml/scripts/export_gguf.py`,
 which needs `torch` + `gguf`, plus `faiss-cpu` for index conversion):
-`models/hubert.gguf` (fairseq HuBERT or HF-format ContentVec/HuBERT — key names are remapped
-automatically), `models/rmvpe.gguf`, `models/<character>.gguf`, `models/<character>.index.gguf`.
+`models/hubert.gguf` — feature extractor; the `hubert`/`wavlm`/`spin` subcommands cover
+fairseq HuBERT and HF-format ContentVec/HuBERT/WavLM/SPIN (keys are remapped automatically;
+WavLM gated relative-position tensors are dropped, matching the ecosystem's plain-HuBERT
+loading) — plus `models/rmvpe.gguf`, `models/<character>.gguf`, `models/<character>.index.gguf`.
 
 ```powershell
 RVC-GGML.exe --input in.wav --model models\<character>.gguf --index models\<character>.index.gguf `
@@ -279,6 +281,8 @@ Some source comments reference internal docs that were **never committed** (e.g.
   `rvc-ui/src/audio_utils.cpp`) — keep the three copies in sync. An older phase-table version
   produced sign-flipped spikes for some ratios (e.g. 32k → 44.1k); `rvc-ui` carries a regression
   test (`-DRVC_UI_BUILD_TESTS=ON`, target `resample_test`).
+- Feature extractors: ContentVec/HuBERT also serve v1 models (they ship `final_proj`);
+  WavLM/SPIN extractors are v2-only (no `final_proj`; the loader returns a clear error for v1).
 
 ## Workflow expectations for agents
 

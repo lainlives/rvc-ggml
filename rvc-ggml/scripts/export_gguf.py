@@ -3,6 +3,8 @@
 #
 # Convert RVC ecosystem model artifacts to GGUF (for use by the RVC-GGML ggml inference core):
 #   1. hubert:  assets/hubert/hubert_base.pt      -> hubert.gguf  (fairseq HuBERT/ContentVec)
+#      wavlm:   <hf wavlm dir>/pytorch_model.bin  -> wavlm.gguf   (HuggingFace WavLM; relative-position tensors dropped)
+#      spin:    <hf spin dir>/pytorch_model.bin   -> spin.gguf    (HuggingFace SPIN-style checkpoints, incl. parametrized weight_norm)
 #   2. rmvpe:   assets/rmvpe/rmvpe.pt             -> rmvpe.gguf   (E2E pitch model, includes the mel filterbank)
 #   3. model:   assets/weights/*.pth              -> <name>.gguf  (SynthesizerTrnMs v1/v2, f0/non-f0)
 #   4. index:   logs/*.index                      -> <name>.index.gguf (FAISS IVF/Flat retrieval index)
@@ -22,6 +24,8 @@
 #
 # Usage:
 #   python export_gguf.py hubert --input assets/hubert/hubert_base.pt --out models/hubert.gguf
+#   python export_gguf.py wavlm  --input <hf-dir>/pytorch_model.bin --out models/wavlm.gguf
+#   python export_gguf.py spin   --input <hf-dir>/pytorch_model.bin --out models/spin.gguf
 #   python export_gguf.py rmvpe  --input assets/rmvpe/rmvpe.pt --out models/rmvpe.gguf
 #   python export_gguf.py model  --input assets/weights/soyo.pth --out models/soyo.gguf --dtype fp16
 #   python export_gguf.py index  --input logs/soyo.index --out models/soyo.index.gguf
@@ -276,6 +280,9 @@ def remap_hf_hubert_keys(state: dict[str, torch.Tensor]) -> dict[str, torch.Tens
         # feature projection -> fairseq layer_norm (pre-projection) + post_extract_proj
         k = k.replace("feature_projection.layer_norm.", "layer_norm.")
         k = k.replace("feature_projection.projection.", "post_extract_proj.")
+        # torch parametrization rewrite of weight_norm (e.g. spin-v2) -> classic weight_g/weight_v
+        k = k.replace(".parametrizations.weight.original0", ".weight_g")
+        k = k.replace(".parametrizations.weight.original1", ".weight_v")
         # positional convolution
         k = k.replace("encoder.pos_conv_embed.conv.", "encoder.pos_conv.0.")
         # transformer layers
@@ -313,6 +320,20 @@ def export_hubert(input_path: str, out_path: str, dtype: str) -> None:
     # HuggingFace-format checkpoints use different key names; remap to the fairseq
     # layout the RVC-GGML HuBERT module expects (fairseq checkpoints are unaffected).
     state = remap_hf_hubert_keys(state)
+
+    # WavLM's gated relative-position tensors are not part of the inference graph
+    # (the RVC ecosystem loads such checkpoints as plain HuBERT models, ignoring them).
+    # Note: the keys are matched after remapping, hence ".self_attn.".
+    wavlm_only = [
+        k for k in state
+        if ".rel_attn_embed." in k
+        or ".gru_rel_pos_linear." in k
+        or ".gru_rel_pos_const" in k
+    ]
+    for k in wavlm_only:
+        del state[k]
+    if wavlm_only:
+        print(f"  note: dropped {len(wavlm_only)} WavLM relative-position tensors (unused by inference)")
 
     # Architecture sizes: fairseq cfg > sibling config.json (HF) > defaults
     hf_cfg: dict = {}
@@ -825,7 +846,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="RVC-GGML model conversion tool")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("hubert", help="Convert HuBERT/ContentVec")
+    p = sub.add_parser("hubert", help="Convert HuBERT/ContentVec (fairseq or HuggingFace)")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--dtype", default="fp16")
+
+    p = sub.add_parser("wavlm", help="Convert a HuggingFace WavLM feature extractor")
+    p.add_argument("--input", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--dtype", default="fp16")
+
+    p = sub.add_parser("spin", help="Convert a HuggingFace SPIN-style feature extractor")
     p.add_argument("--input", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--dtype", default="fp16")
@@ -850,7 +881,7 @@ def main() -> int:
     p.add_argument("--dtype", default="fp16")
 
     args = parser.parse_args()
-    if args.cmd == "hubert":
+    if args.cmd in ("hubert", "wavlm", "spin"):
         export_hubert(args.input, args.out, args.dtype)
     elif args.cmd == "rmvpe":
         export_rmvpe(args.input, args.out, args.dtype)
